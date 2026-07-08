@@ -221,11 +221,20 @@ class LoadingSplash(QtWidgets.QWidget):
             (0.72, 28.0, 340.0, 1.35, 1.2, 22),
             (0.85, 22.0, 260.0, 0.80, 2.4, 30),
         )
-        for base_frac, amp, wavelength, pmult, poff, alpha in layers:
+
+        def draw_wave(layer: tuple) -> None:
+            base_frac, amp, wavelength, pmult, poff, alpha = layer
             painter.fillPath(
                 self._wave_path(w, h, base_frac * h, amp, wavelength, wave_phase * pmult + poff),
                 QtGui.QBrush(QtGui.QColor(255, 255, 255, alpha)),
             )
+
+        # Back wave, then a little navigator's ship riding it, then the nearer
+        # waves — so the hull nestles into the water instead of floating above it.
+        draw_wave(layers[0])
+        self._draw_ship(painter, w, h, wave_phase, layers[0])
+        for layer in layers[1:]:
+            draw_wave(layer)
 
         # Subtle 1px inner border for definition on light desktops (straight corners).
         pen = QtGui.QPen(QtGui.QColor(0, 0, 0, 60))
@@ -234,6 +243,118 @@ class LoadingSplash(QtWidgets.QWidget):
         painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
         painter.drawRect(0, 0, w - 1, h - 1)
         painter.end()
+
+    def _draw_ship(
+        self, painter: QtGui.QPainter, w: int, h: int, wave_phase: float, base_layer: tuple
+    ) -> None:
+        """A small age-of-exploration ship (caravel/galleon) riding the back wave.
+
+        Drawn in the same flat, translucent-white idiom as the waves. It bobs on
+        the wave surface and rocks with the wave's local slope, and the sails
+        gently breathe with the wind.
+        """
+        _base_frac, amp, wavelength, pmult, poff, _alpha = base_layer
+        ship_x = w * 0.60
+        # Sit a little below the back wave's baseline so the nearer waves (drawn
+        # after) lap over the hull; bob with the wave, rock with its local slope.
+        angle = 2.0 * math.pi * (ship_x / wavelength) + wave_phase * pmult + poff
+        surface_y = 0.635 * h + amp * math.sin(angle)
+        rock_deg = 5.0 * math.cos(angle)
+
+        sail_col = QtGui.QColor(255, 255, 255, 236)
+        hull_col = QtGui.QColor(232, 240, 255, 232)
+        mast_col = QtGui.QColor(255, 255, 255, 205)
+        rig_col = QtGui.QColor(255, 255, 255, 90)
+        flag_col = QtGui.QColor(255, 255, 255, 236)
+
+        painter.save()
+        painter.translate(ship_x, surface_y)
+        painter.rotate(rock_deg)
+
+        # Standing rigging (behind everything).
+        rig_pen = QtGui.QPen(rig_col)
+        rig_pen.setWidthF(1.2)
+        painter.setPen(rig_pen)
+        painter.drawLine(QtCore.QPointF(-58, -2), QtCore.QPointF(28, -122))    # stern stay -> main top
+        painter.drawLine(QtCore.QPointF(104, -22), QtCore.QPointF(28, -122))   # bowsprit -> main top
+        painter.drawLine(QtCore.QPointF(104, -22), QtCore.QPointF(-18, -106))  # bowsprit -> fore top
+
+        # Masts + bowsprit.
+        mast_pen = QtGui.QPen(mast_col)
+        mast_pen.setWidthF(3.2)
+        mast_pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+        painter.setPen(mast_pen)
+        painter.drawLine(QtCore.QPointF(-18, 2), QtCore.QPointF(-18, -106))    # foremast
+        painter.drawLine(QtCore.QPointF(28, 4), QtCore.QPointF(28, -124))      # mainmast
+        painter.drawLine(QtCore.QPointF(74, -6), QtCore.QPointF(104, -22))     # bowsprit
+
+        # Sails, billowing to leeward; the belly breathes with the wind.
+        bulge = 11.0 + 2.5 * math.sin(wave_phase * 1.6)
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        painter.setBrush(sail_col)
+        painter.drawPath(self._square_sail(-40, 4, -98, -52, bulge))          # foremast course
+        painter.drawPath(self._square_sail(2, 58, -116, -70, bulge))         # mainmast topsail
+        painter.drawPath(self._square_sail(-6, 62, -62, -8, bulge * 1.15))   # mainmast course
+
+        # Hull (drawn over the mast feet) + raised stern castle.
+        painter.setBrush(hull_col)
+        painter.drawPath(self._hull_path())
+        painter.drawPath(self._stern_castle_path())
+
+        # Fluttering pennant at the mainmast head.
+        flutter = 4.0 * math.sin(wave_phase * 3.0)
+        flag = QtGui.QPainterPath()
+        flag.moveTo(28, -124)
+        flag.lineTo(58 + flutter, -119 + flutter * 0.4)
+        flag.lineTo(28, -114)
+        flag.closeSubpath()
+        painter.setBrush(flag_col)
+        painter.drawPath(flag)
+
+        painter.restore()
+
+    @staticmethod
+    def _hull_path() -> QtGui.QPainterPath:
+        p = QtGui.QPainterPath()
+        p.moveTo(-76, -2)                       # stern top
+        p.lineTo(-66, 14)                       # stern down into the water
+        p.cubicTo(-34, 30, 34, 30, 66, 16)      # belly
+        p.lineTo(84, -8)                        # raised prow
+        p.lineTo(62, 2)                         # inner bow (deck front)
+        p.cubicTo(16, 8, -34, 8, -60, 2)        # deck sheer back to stern
+        p.closeSubpath()
+        return p
+
+    @staticmethod
+    def _stern_castle_path() -> QtGui.QPainterPath:
+        p = QtGui.QPainterPath()
+        p.moveTo(-76, -2)
+        p.lineTo(-77, -22)
+        p.lineTo(-54, -24)
+        p.lineTo(-50, -2)
+        p.closeSubpath()
+        return p
+
+    @staticmethod
+    def _square_sail(
+        xl: float, xr: float, ytop: float, ybot: float, bulge: float
+    ) -> QtGui.QPainterPath:
+        """A billowing square sail bulging to leeward (down/right)."""
+        span = ybot - ytop
+        p = QtGui.QPainterPath()
+        p.moveTo(xl, ytop)
+        p.lineTo(xr, ytop)                                                  # yard (top)
+        p.cubicTo(xr + bulge * 0.5, ytop + span * 0.4,
+                  xr + bulge * 0.5, ytop + span * 0.7,
+                  xr - bulge * 0.1, ybot)                                   # leech (right)
+        p.cubicTo((xl + xr) * 0.5 + bulge, ybot + bulge * 0.55,
+                  (xl + xr) * 0.5 - bulge * 0.2, ybot + bulge * 0.35,
+                  xl + bulge * 0.1, ybot)                                   # foot (bottom belly)
+        p.cubicTo(xl + bulge * 0.35, ytop + span * 0.6,
+                  xl + bulge * 0.25, ytop + span * 0.3,
+                  xl, ytop)                                                 # luff (left)
+        p.closeSubpath()
+        return p
 
     @staticmethod
     def _wave_path(
