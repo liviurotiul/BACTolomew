@@ -253,12 +253,15 @@ class LoadingSplash(QtWidgets.QWidget):
         the wave surface and rocks with the wave's local slope, and the sails
         gently breathe with the wind.
         """
-        _base_frac, amp, wavelength, pmult, poff, _alpha = base_layer
-        ship_x = w * 0.60
-        # Sit a little below the back wave's baseline so the nearer waves (drawn
-        # after) lap over the hull; bob with the wave, rock with its local slope.
+        _base_frac, _amp, wavelength, pmult, poff, _alpha = base_layer
+        # Slow forward/back sway. The ship faces right-to-left, so "forward" is left.
+        drift = 26.0 * math.sin(wave_phase * 0.5) + 7.0 * math.sin(wave_phase * 1.3 + 0.7)
+        ship_x = w * 0.60 + drift
+        # Bob on the wave it rides, at the same average height (between the back
+        # 0.60 wave and the middle 0.72 wave). The bob is deep enough that at the
+        # bottom of a swell the hull sinks behind the middle wave (drawn after it).
         angle = 2.0 * math.pi * (ship_x / wavelength) + wave_phase * pmult + poff
-        surface_y = 0.635 * h + amp * math.sin(angle)
+        surface_y = 0.63 * h + 26.0 * math.sin(angle)
         rock_deg = 5.0 * math.cos(angle)
 
         sail_col = QtGui.QColor(255, 255, 255, 236)
@@ -270,6 +273,7 @@ class LoadingSplash(QtWidgets.QWidget):
         painter.save()
         painter.translate(ship_x, surface_y)
         painter.rotate(rock_deg)
+        painter.scale(-1.0, 1.0)  # mirror so the ship sails right-to-left
 
         # Standing rigging (behind everything).
         rig_pen = QtGui.QPen(rig_col)
