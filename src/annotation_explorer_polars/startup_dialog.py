@@ -797,15 +797,36 @@ class StartupDialog(QtWidgets.QDialog):
         from pipeline.DataInput import DataInput
         from pipeline.ToolEnv import (
             configured_assembly_qc_settings,
+            configured_bakta_db_path,
             configured_chewbbaca_settings,
+            configured_database_dirs,
             configured_fastgear_settings,
             configured_mobsuite_settings,
+            relocate_db_path,
         )
 
         inputs = run_cfg.get("inputs") if isinstance(run_cfg, dict) else None
         if not isinstance(inputs, dict):
             QtWidgets.QMessageBox.critical(self, "Run config error", "run_config.json is missing inputs.")
             return None
+
+        # Re-resolve reference-DB inputs against the current config so a run stays
+        # loadable after the project or DB directory was moved/renamed (the stored
+        # absolute path is the fallback). Genomes are user inputs outside the DB and
+        # are left exactly as recorded.
+        db_dirs = configured_database_dirs()
+        marker_sequences = [
+            relocate_db_path(p, db_dirs.get("marker_sequences_dir"))
+            for p in (inputs.get("marker_sequences") or [])
+        ]
+        reference_locus_sequences = [
+            relocate_db_path(p, db_dirs.get("compound_sequences_dir"))
+            for p in (inputs.get("reference_locus_sequences") or [])
+        ]
+        bakta_db = inputs.get("bakta_db")
+        if bakta_db and not Path(str(bakta_db)).expanduser().exists():
+            bakta_db = configured_bakta_db_path() or bakta_db
+
         expected_files = resolve_expected_files(output_dir)
         missing_groups = {
             group
@@ -817,11 +838,11 @@ class StartupDialog(QtWidgets.QDialog):
         try:
             cfg = DataInput(
                 genomes=[Path(p) for p in inputs.get("genomes") or []],
-                marker_sequences=[Path(p) for p in inputs.get("marker_sequences") or []],
-                reference_locus_sequences=[Path(p) for p in inputs.get("reference_locus_sequences") or []],
+                marker_sequences=[Path(p) for p in marker_sequences],
+                reference_locus_sequences=[Path(p) for p in reference_locus_sequences],
                 output=output_dir,
                 snippy_reference=inputs.get("snippy_reference"),
-                bakta_db=inputs.get("bakta_db"),
+                bakta_db=bakta_db,
                 dmnd_threads=inputs.get("dmnd_threads", inputs.get("cores", 1)),
                 bakta_threads=inputs.get("bakta_threads", inputs.get("cores", 1)),
                 window_length=int(inputs.get("window_length", 500)),

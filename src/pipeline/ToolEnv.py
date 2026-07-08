@@ -371,6 +371,41 @@ def configured_bakta_db_path() -> str:
     return DEV_BAKTA_DB_PATH
 
 
+def configured_database_dirs() -> dict[str, str]:
+    """Current on-disk locations of the reference-DB sub-directories, read from
+    bactolomew_config.json's `databases` block. Used to re-resolve absolute paths
+    baked into an older run_config.json after the project or DB has moved/renamed."""
+    config = _load_app_config()
+    dbs = config.get("databases") if isinstance(config.get("databases"), Mapping) else {}
+    return {
+        "root_dir": str(dbs.get("root_dir") or "").strip(),
+        "marker_sequences_dir": str(dbs.get("marker_sequences_dir") or "").strip(),
+        "compound_sequences_dir": str(dbs.get("compound_sequences_dir") or "").strip(),
+        "cgmlst_dir": str(dbs.get("cgmlst_dir") or "").strip(),
+    }
+
+
+def relocate_db_path(stored: Any, current_dir: Optional[str]) -> str:
+    """Re-resolve a DB input path recorded in a run against the current config.
+
+    If the stored path still exists, keep it. Otherwise, if `current_dir` holds an
+    entry of the same basename, use that (handles a moved/renamed project or DB).
+    Fall back to the stored value so validation still reports the original path when
+    no better candidate exists.
+    """
+    text = str(stored).strip()
+    if not text:
+        return text
+    p = Path(text).expanduser()
+    if p.exists():
+        return str(p)
+    if current_dir:
+        candidate = Path(current_dir) / p.name
+        if candidate.exists():
+            return str(candidate)
+    return text
+
+
 def configured_mobsuite_settings(raw_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     config = _load_app_config()
     app_raw = config.get("mobsuite")
@@ -616,6 +651,8 @@ __all__ = [
     "conda_tool_cmd",
     "tool_cmd",
     "configured_bakta_db_path",
+    "configured_database_dirs",
+    "relocate_db_path",
     "configured_mobsuite_settings",
     "configured_fastgear_settings",
     "configured_chewbbaca_settings",
