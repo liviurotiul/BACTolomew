@@ -217,9 +217,11 @@ class LoadingSplash(QtWidgets.QWidget):
         wave_phase = self._current_wave_phase()
         layers = (
             # (baseline_frac, amplitude, wavelength, phase_mult, phase_off, alpha)
-            (0.60, 20.0, 430.0, 1.00, 0.0, 16),
-            (0.72, 28.0, 340.0, 1.35, 1.2, 22),
-            (0.85, 22.0, 260.0, 0.80, 2.4, 30),
+            (0.60, 20.0, 430.0, 1.00, 0.0, 20),
+            # The middle wave is drawn over the ship, so it needs enough opacity to
+            # actually read as water lapping over the hull when the ship sinks.
+            (0.72, 28.0, 340.0, 1.35, 1.2, 70),
+            (0.85, 22.0, 260.0, 0.80, 2.4, 95),
         )
 
         def draw_wave(layer: tuple) -> None:
@@ -254,8 +256,19 @@ class LoadingSplash(QtWidgets.QWidget):
         gently breathe with the wind.
         """
         _base_frac, _amp, wavelength, pmult, poff, _alpha = base_layer
-        # Slow forward/back sway. The ship faces right-to-left, so "forward" is left.
-        drift = 26.0 * math.sin(wave_phase * 0.5) + 7.0 * math.sin(wave_phase * 1.3 + 0.7)
+        # Asymmetric sway: a quick lurch forward (~0.5 s) then a slow drift back
+        # (~3 s), repeating. The ship faces right-to-left, so "forward" is left.
+        t = wave_phase / self._WAVE_SPEED  # elapsed seconds
+        t_fwd, t_back = 0.5, 3.0
+        u = t % (t_fwd + t_back)
+        if u < t_fwd:
+            s = u / t_fwd
+            pos = s * s * (3.0 - 2.0 * s)          # 0 -> 1, eased (fast forward)
+        else:
+            s = (u - t_fwd) / t_back
+            pos = 1.0 - s * s * (3.0 - 2.0 * s)    # 1 -> 0, eased (slow back)
+        sway = 24.0  # px to either side of centre
+        drift = (0.5 - pos) * 2.0 * sway           # pos 1 -> left (forward), pos 0 -> right (back)
         ship_x = w * 0.60 + drift
         # Bob on the wave it rides, at the same average height (between the back
         # 0.60 wave and the middle 0.72 wave). The bob is deep enough that at the
