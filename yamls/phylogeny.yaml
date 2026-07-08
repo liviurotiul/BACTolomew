@@ -1,0 +1,7 @@
+name: bactolomew-phylogeny
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - snippy=4.6.0
+  - raxml-ng=1.2.2

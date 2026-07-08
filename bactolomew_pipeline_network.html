@@ -1,0 +1,1192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BACTolomew Pipeline Map</title>
+  <style>
+    :root {
+      --bg: #f5f2ea;
+      --paper: #fffdf8;
+      --ink: #20313a;
+      --muted: #5d6e77;
+      --line: #d9d3c7;
+      --shadow: 0 18px 42px rgba(32, 49, 58, 0.08);
+      --lane-input: #e8f2ed;
+      --lane-context: #e8eef8;
+      --lane-structure: #f8efe3;
+      --lane-integration: #f6e8ea;
+      --node-input: #2f7d62;
+      --node-context: #3d6896;
+      --node-structure: #a86a2a;
+      --node-integration: #a54658;
+      --node-output: #506d2f;
+      --node-optional: #8b8c89;
+      --edge: #8ea0aa;
+      --edge-active: #20313a;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at top left, rgba(47, 125, 98, 0.08), transparent 24rem),
+        radial-gradient(circle at top right, rgba(61, 104, 150, 0.08), transparent 26rem),
+        linear-gradient(180deg, #f7f4ed 0%, var(--bg) 100%);
+      color: var(--ink);
+      font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    }
+
+    .page {
+      max-width: 1680px;
+      margin: 0 auto;
+      padding: 28px 24px 32px;
+    }
+
+    .hero {
+      display: grid;
+      gap: 14px;
+      margin-bottom: 22px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      width: fit-content;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(32, 49, 58, 0.06);
+      color: var(--muted);
+      font-size: 13px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(2rem, 2.8vw, 3.3rem);
+      line-height: 1.05;
+      max-width: 15ch;
+    }
+
+    .lead {
+      max-width: 78ch;
+      font-size: 1.05rem;
+      line-height: 1.65;
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .badge {
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(32, 49, 58, 0.08);
+      background: rgba(255, 255, 255, 0.78);
+      font-size: 0.95rem;
+      color: var(--ink);
+      box-shadow: 0 6px 18px rgba(32, 49, 58, 0.05);
+    }
+
+    .canvas-shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1.65fr) minmax(320px, 0.7fr);
+      gap: 20px;
+      align-items: start;
+    }
+
+    .graph-card,
+    .panel,
+    .note-card {
+      background: rgba(255, 253, 248, 0.9);
+      border: 1px solid rgba(32, 49, 58, 0.08);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }
+
+    .graph-card {
+      border-radius: 28px;
+      overflow: hidden;
+    }
+
+    .graph-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: end;
+      padding: 20px 22px 12px;
+    }
+
+    .graph-title {
+      margin: 0;
+      font-size: 1.25rem;
+    }
+
+    .graph-copy {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 0.96rem;
+      line-height: 1.5;
+      max-width: 62ch;
+    }
+
+    .graph-note {
+      padding: 10px 14px;
+      border-radius: 18px;
+      background: rgba(47, 125, 98, 0.08);
+      color: var(--ink);
+      font-size: 0.92rem;
+      line-height: 1.45;
+      max-width: 30ch;
+    }
+
+    svg {
+      width: 100%;
+      height: auto;
+      display: block;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0));
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      padding: 12px 22px 18px;
+      color: var(--muted);
+      font-size: 0.93rem;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 4px;
+      display: inline-block;
+      border: 1px solid rgba(32, 49, 58, 0.1);
+    }
+
+    .edge-demo {
+      width: 32px;
+      height: 0;
+      border-top: 2px solid var(--edge);
+      display: inline-block;
+    }
+
+    .edge-demo.optional {
+      border-top-style: dashed;
+    }
+
+    .panel {
+      border-radius: 24px;
+      padding: 22px 22px 20px;
+      position: sticky;
+      top: 18px;
+    }
+
+    .panel-kicker {
+      margin: 0 0 8px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .panel h2 {
+      margin: 0 0 10px;
+      font-size: 1.55rem;
+      line-height: 1.15;
+    }
+
+    .panel p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .panel-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 14px 0 16px;
+    }
+
+    .chip {
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: rgba(32, 49, 58, 0.06);
+      font-size: 0.84rem;
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .panel-section {
+      margin-top: 18px;
+      padding-top: 16px;
+      border-top: 1px solid rgba(32, 49, 58, 0.08);
+    }
+
+    .panel-section h3 {
+      margin: 0 0 10px;
+      font-size: 1rem;
+    }
+
+    .panel-section ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--ink);
+      line-height: 1.55;
+    }
+
+    .notes {
+      margin-top: 20px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .note-card {
+      border-radius: 22px;
+      padding: 18px 18px 16px;
+    }
+
+    .note-card h3 {
+      margin: 0 0 10px;
+      font-size: 1rem;
+    }
+
+    .note-card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 0.95rem;
+    }
+
+    footer {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 0.9rem;
+      text-align: center;
+    }
+
+    .lane {
+      fill-opacity: 1;
+      stroke: rgba(32, 49, 58, 0.08);
+      stroke-width: 1.5;
+    }
+
+    .lane-label {
+      font-size: 22px;
+      font-weight: 700;
+      fill: var(--ink);
+    }
+
+    .lane-copy {
+      font-size: 14px;
+      fill: var(--muted);
+    }
+
+    .node {
+      cursor: pointer;
+      transition: transform 140ms ease, opacity 140ms ease;
+    }
+
+    .node:hover .node-shell {
+      filter: brightness(1.02);
+    }
+
+    .node.active .node-shell {
+      stroke-width: 3;
+      stroke: var(--edge-active);
+    }
+
+    .node.active .node-title {
+      fill: var(--edge-active);
+    }
+
+    .node-shell {
+      fill: rgba(255, 255, 255, 0.94);
+      stroke-width: 1.4;
+    }
+
+    .node-band {
+      opacity: 0.96;
+    }
+
+    .node-kicker {
+      font-size: 12px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      fill: var(--muted);
+      font-weight: 700;
+    }
+
+    .node-title {
+      font-size: 22px;
+      font-weight: 700;
+      fill: var(--ink);
+    }
+
+    .node-strap {
+      font-size: 13px;
+      fill: var(--muted);
+    }
+
+    .optional-chip {
+      font-size: 11px;
+      font-weight: 700;
+      fill: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+    }
+
+    .edge {
+      fill: none;
+      stroke: var(--edge);
+      stroke-width: 2.3;
+      stroke-linecap: round;
+      opacity: 0.92;
+      marker-end: url(#arrow);
+    }
+
+    .edge.optional {
+      stroke-dasharray: 8 8;
+    }
+
+    .edge.active {
+      stroke: var(--edge-active);
+      stroke-width: 3;
+      opacity: 1;
+    }
+
+    @media (max-width: 1180px) {
+      .canvas-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .panel {
+        position: static;
+      }
+
+      .notes {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 760px) {
+      .page {
+        padding: 18px 14px 24px;
+      }
+
+      .graph-head {
+        flex-direction: column;
+        align-items: start;
+      }
+
+      .notes {
+        grid-template-columns: 1fr;
+      }
+
+      .badge,
+      .graph-note {
+        font-size: 0.9rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <div class="eyebrow">BACTolomew headless pipeline</div>
+      <h1>Linking clone structure to AMR gene and locus context</h1>
+      <p class="lead">
+        This process map shows the non-GUI BACTolomew workflow as two converging evidence tracks:
+        one track builds genomic context from curated marker and compound-locus databases, while the
+        other resolves cohort structure through SNP and pangenome analyses. Click any step for the
+        biological rationale, major outputs, and interpretation boundaries.
+      </p>
+      <div class="badges">
+        <span class="badge">Assembly-first input for routine cohort analysis</span>
+        <span class="badge">Separate gene-level and compound-locus evidence layers</span>
+        <span class="badge">Practical on limited-to-medium infrastructure</span>
+        <span class="badge">No GUI components shown here</span>
+      </div>
+    </section>
+
+    <section class="canvas-shell">
+      <div class="graph-card">
+        <div class="graph-head">
+          <div>
+            <h2 class="graph-title">BACTolomew process map</h2>
+            <p class="graph-copy">
+              The pipeline is organized around the core hospital AMR question: which isolates are
+              clonally related, and which genes or larger loci travel with them?
+            </p>
+          </div>
+          <div class="graph-note">
+            Broad bacterial WGS suites often expose many tools at once. This map deliberately groups
+            the workflow by biological function so the logic remains visible.
+          </div>
+        </div>
+
+        <svg id="pipelineGraph" viewBox="0 0 1460 860" aria-labelledby="svgTitle svgDesc" role="img">
+          <title id="svgTitle">BACTolomew pipeline process map</title>
+          <desc id="svgDesc">A left-to-right directed graph with inputs, genomic context, population structure, integration, and outputs.</desc>
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8.2" refY="5" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#8ea0aa"></path>
+            </marker>
+          </defs>
+          <g id="laneLayer"></g>
+          <g id="edgeLayer"></g>
+          <g id="nodeLayer"></g>
+        </svg>
+
+        <div class="legend">
+          <span class="legend-item"><span class="swatch" style="background:#e8f2ed"></span>Inputs</span>
+          <span class="legend-item"><span class="swatch" style="background:#e8eef8"></span>Gene and locus context</span>
+          <span class="legend-item"><span class="swatch" style="background:#f8efe3"></span>Population structure</span>
+          <span class="legend-item"><span class="swatch" style="background:#f6e8ea"></span>Integration and outputs</span>
+          <span class="legend-item"><span class="edge-demo"></span>Default branch</span>
+          <span class="legend-item"><span class="edge-demo optional"></span>Optional branch</span>
+        </div>
+      </div>
+
+      <aside class="panel" id="detailPanel">
+        <p class="panel-kicker">Pipeline overview</p>
+        <h2>Why this layout is simpler</h2>
+        <p>
+          BACTolomew is easier to understand as a directed process than as a dense all-to-all network.
+          The pipeline has two main biological jobs: infer cohort structure and recover contextualized
+          gene or locus evidence. Those branches rejoin only when interpretation begins.
+        </p>
+        <div class="panel-meta">
+          <span class="chip">Assembly-based</span>
+          <span class="chip">Cohort-oriented</span>
+          <span class="chip">Hospital AMR focus</span>
+        </div>
+        <div class="panel-section">
+          <h3>What to click for</h3>
+          <ul>
+            <li>Inputs show which biological target spaces are curated outside the analysis itself.</li>
+            <li>Context nodes explain how gene hits and compound loci are treated as different evidence layers.</li>
+            <li>Structure nodes explain why core SNP and pangenome signals are both needed.</li>
+          </ul>
+        </div>
+        <div class="panel-section">
+          <h3>Compute fit</h3>
+          <ul>
+            <li>The main workflow begins from assemblies rather than forcing raw-read assembly inside the pipeline.</li>
+            <li>Heavier branches such as reference-based variant calling are optional rather than mandatory.</li>
+            <li>Targeted searches against curated databases are easier to run routinely than permanently maximal workflows.</li>
+          </ul>
+        </div>
+      </aside>
+    </section>
+
+    <section class="notes">
+      <article class="note-card">
+        <h3>Gene hits are not enough</h3>
+        <p>
+          Marker screening tells you which annotated coding sequences resemble known AMR, virulence,
+          mobile, plasmid or phage-associated entries. It does not by itself show whether those genes
+          sit inside a larger resistance island or other compound locus.
+        </p>
+      </article>
+      <article class="note-card">
+        <h3>Compound loci need separate screening</h3>
+        <p>
+          BACTolomew keeps compound-locus FASTA catalogs separate so larger reference elements can be
+          searched across complete assemblies instead of being reduced to isolated gene calls.
+        </p>
+      </article>
+      <article class="note-card">
+        <h3>Structure needs two views</h3>
+        <p>
+          Core SNP phylogeny captures clonal relatedness, while Roary and Panaroo recover accessory
+          genome structure. Hospital AMR interpretation usually needs both vertical and horizontal
+          signals.
+        </p>
+      </article>
+      <article class="note-card">
+        <h3>Practical compute claim</h3>
+        <p>
+          The defensible claim is not that every analysis is lightweight, but that BACTolomew is more
+          deployable on modest infrastructure because it is modular, assembly-first, and can avoid
+          optional heavy branches when they are not required.
+        </p>
+      </article>
+    </section>
+
+    <footer>
+      Non-GUI BACTolomew only. This page summarizes biological analysis flow, not interface components.
+    </footer>
+  </div>
+
+  <script>
+    const colors = {
+      input: getComputedStyle(document.documentElement).getPropertyValue("--node-input").trim(),
+      context: getComputedStyle(document.documentElement).getPropertyValue("--node-context").trim(),
+      structure: getComputedStyle(document.documentElement).getPropertyValue("--node-structure").trim(),
+      integration: getComputedStyle(document.documentElement).getPropertyValue("--node-integration").trim(),
+      output: getComputedStyle(document.documentElement).getPropertyValue("--node-output").trim(),
+      optional: getComputedStyle(document.documentElement).getPropertyValue("--node-optional").trim()
+    };
+
+    const lanes = [
+      {
+        x: 40, y: 92, w: 250, h: 610,
+        fill: "#e8f2ed",
+        title: "Inputs",
+        copy: "Assembled genomes plus curated biological target catalogs"
+      },
+      {
+        x: 320, y: 92, w: 610, h: 330,
+        fill: "#e8eef8",
+        title: "Gene and locus context",
+        copy: "Recover coding-sequence hits and larger reference loci from curated target spaces"
+      },
+      {
+        x: 320, y: 450, w: 610, h: 252,
+        fill: "#f8efe3",
+        title: "Population structure",
+        copy: "Resolve relatedness and accessory-genome change across the cohort"
+      },
+      {
+        x: 960, y: 92, w: 460, h: 610,
+        fill: "#f6e8ea",
+        title: "Integrated interpretation",
+        copy: "Bring contextual evidence and clonal structure back together"
+      }
+    ];
+
+    const nodes = [
+      {
+        id: "markerDb",
+        x: 68, y: 152, w: 194, h: 88,
+        group: "input",
+        label: ["Curated marker", "databases"],
+        strap: "AMR, virulence, mobile, plasmid, phage, COG",
+        detail: {
+          category: "Input evidence",
+          title: "Curated marker databases",
+          summary: "These FASTA catalogs define the gene-level biological target space that BACTolomew can recognize during marker screening.",
+          bullets: [
+            "Markers are already grouped into biologically meaningful classes rather than treated as an undifferentiated sequence dump.",
+            "The catalogs separate AMR, biocide-metal resistance, virulence, mobile, plasmid, phage and COG-oriented evidence layers.",
+            "Changing the catalog changes what the pipeline can call, so curation quality matters as much as the aligner."
+          ],
+          outputs: [
+            "DIAMOND-formatted marker databases",
+            "Category-aware gene hit interpretation"
+          ]
+        }
+      },
+      {
+        id: "compoundDb",
+        x: 68, y: 266, w: 194, h: 88,
+        group: "input",
+        label: ["Compound locus", "catalogs"],
+        strap: "Reference resistance islands and other larger loci",
+        detail: {
+          category: "Input evidence",
+          title: "Curated compound-locus catalogs",
+          summary: "Compound loci are treated separately because larger reference elements carry biological meaning that can be lost when everything is reduced to single-gene calls.",
+          bullets: [
+            "This layer is useful for resistance islands, pathogenicity islands and other multi-gene loci.",
+            "Whole-locus evidence can explain why two isolates share a larger genomic module even when individual genes are rearranged.",
+            "Compound catalogs are searched across assemblies, not just through annotated CDS calls."
+          ],
+          outputs: [
+            "DIAMOND-formatted locus databases",
+            "Reference-locus hit tables across the cohort"
+          ]
+        }
+      },
+      {
+        id: "cohort",
+        x: 68, y: 428, w: 194, h: 112,
+        group: "input",
+        label: ["Assembled genome", "cohort"],
+        strap: "Retrospective isolates, regional collections, public assemblies",
+        detail: {
+          category: "Primary input",
+          title: "Assembled genome cohort",
+          summary: "The main headless workflow begins from assembled genomes, which makes retrospective and surveillance cohorts easier to process than a permanently raw-read-centric design.",
+          bullets: [
+            "Starting from assemblies reduces routine compute demand compared with forcing de novo assembly inside every run.",
+            "Assemblies are sufficient for annotation, marker screening, locus screening, Snippy contig-mode comparisons and pangenome analysis.",
+            "This design is practical for regional cohorts compiled from different sources, but it does not claim to solve plasmid closure."
+          ],
+          outputs: [
+            "Genome inputs for annotation, locus search, phylogeny and pangenome stages"
+          ]
+        }
+      },
+      {
+        id: "refs",
+        x: 68, y: 580, w: 194, h: 82,
+        group: "input",
+        optional: true,
+        label: ["Optional references"],
+        strap: "Snippy reference; variant reference plus annotation",
+        detail: {
+          category: "Optional input",
+          title: "Optional reference inputs",
+          summary: "Reference-guided analyses are available when the cohort and surveillance question justify them, but they are not mandatory for every run.",
+          bullets: [
+            "Snippy requires an appropriate cohort reference to build a core SNP alignment from assembled contigs.",
+            "Reference-based variant calling can add another layer of comparison when a suitable genome and annotation are available.",
+            "Keeping these branches optional helps the pipeline remain usable on modest infrastructure."
+          ],
+          outputs: [
+            "Reference-guided SNP and variant branches when supplied"
+          ]
+        }
+      },
+      {
+        id: "bakta",
+        x: 366, y: 148, w: 212, h: 96,
+        group: "context",
+        label: ["Bakta", "annotation"],
+        strap: "Predict CDS features and export protein or nucleotide sequences",
+        detail: {
+          category: "Context generation",
+          title: "Bakta annotation",
+          summary: "Bakta provides the initial coding-sequence layer that later gets re-screened against curated marker databases.",
+          bullets: [
+            "The key biological role is not only naming genes, but turning assemblies into consistent CDS objects with coordinates and sequences.",
+            "Those CDS sequences can then be compared against the locally curated marker spaces rather than relying on one annotation source alone.",
+            "Annotation is therefore a preparation step for contextual screening, not the endpoint."
+          ],
+          outputs: [
+            "Annotated GFFs",
+            "Per-CDS nucleotide and amino-acid sequences",
+            "Gene coordinates and products"
+          ]
+        }
+      },
+      {
+        id: "diamondDb",
+        x: 366, y: 274, w: 212, h: 96,
+        group: "context",
+        label: ["DIAMOND DB", "build"],
+        strap: "Index the curated marker and compound catalogs for targeted search",
+        detail: {
+          category: "Context generation",
+          title: "DIAMOND database build",
+          summary: "Before screening begins, curated FASTA catalogs are formatted into searchable DIAMOND databases.",
+          bullets: [
+            "This stage makes the pipeline target-driven rather than purely generic.",
+            "The same search engine can serve both CDS-level marker screening and assembly-level locus screening.",
+            "Because the search space is curated, interpretation is easier to align with the actual hospital AMR question."
+          ],
+          outputs: [
+            "Searchable DIAMOND databases for each configured catalog"
+          ]
+        }
+      },
+      {
+        id: "markerScreen",
+        x: 658, y: 148, w: 226, h: 96,
+        group: "context",
+        label: ["Marker gene", "screening"],
+        strap: "Re-screen Bakta CDS calls against local marker catalogs",
+        detail: {
+          category: "Gene-level evidence",
+          title: "Marker gene screening",
+          summary: "BACTolomew does not stop at Bakta gene products. It re-screens annotated CDS sequences against curated marker collections to recover more explicit biological classes.",
+          bullets: [
+            "This step supports consensus category assignment such as AMR, virulence, mobile or plasmid-associated evidence.",
+            "Gene-level hits can be tied back to precise CDS coordinates inside each genome.",
+            "Marker screening is best for localized functions, but it cannot fully represent the architecture of larger loci on its own."
+          ],
+          outputs: [
+            "Per-CDS hit tables against curated marker databases",
+            "Consensus category and source annotations"
+          ]
+        }
+      },
+      {
+        id: "locusScreen",
+        x: 658, y: 274, w: 226, h: 96,
+        group: "context",
+        label: ["Compound locus", "screening"],
+        strap: "Search larger reference loci across complete assemblies",
+        detail: {
+          category: "Locus-level evidence",
+          title: "Compound-locus screening",
+          summary: "This branch asks whether known larger loci are present across genomes, complementing the narrower CDS-level evidence recovered in marker screening.",
+          bullets: [
+            "Locus screening is valuable when resistance or pathogenicity is carried in larger composite elements.",
+            "It helps distinguish isolated gene presence from shared carriage of a broader genetic module.",
+            "Because searches are assembly-level, results depend on assembly quality and locus representation in the reference catalog."
+          ],
+          outputs: [
+            "Per-genome reference-locus hit tables",
+            "Presence patterns for named compound elements"
+          ]
+        }
+      },
+      {
+        id: "snippy",
+        x: 366, y: 504, w: 212, h: 96,
+        group: "structure",
+        label: ["Snippy core SNP", "phylogeny"],
+        strap: "Map contigs to a chosen reference and infer clonal structure",
+        detail: {
+          category: "Population structure",
+          title: "Snippy core SNP phylogeny",
+          summary: "This branch captures the core-genome relatedness of the cohort so transmission-scale questions can be separated from broader gene-content similarity.",
+          bullets: [
+            "Snippy in contig mode allows assembly-based cohorts to participate in reference-guided SNP analysis.",
+            "The biological payoff is a core alignment and tree that make clonal clusters visible.",
+            "Interpretation still depends on having a sensible cohort reference and on understanding that SNP thresholds are context-specific."
+          ],
+          outputs: [
+            "Core SNP alignment",
+            "Reference-guided SNP calls",
+            "RAxML phylogeny"
+          ]
+        }
+      },
+      {
+        id: "pangenome",
+        x: 658, y: 504, w: 226, h: 96,
+        group: "structure",
+        label: ["Roary + Panaroo", "pangenome"],
+        strap: "Recover accessory-genome structure alongside clone structure",
+        detail: {
+          category: "Population structure",
+          title: "Pangenome analysis",
+          summary: "Roary and Panaroo provide the accessory-genome view that the SNP tree cannot capture on its own.",
+          bullets: [
+            "This branch is useful when closely related isolates differ by gene gain, loss or mobile-element carriage.",
+            "Accessory structure is especially relevant for hospital AMR because resistance often moves horizontally rather than only through clonal expansion.",
+            "Pangenome signals therefore complement, not replace, core SNP structure."
+          ],
+          outputs: [
+            "Gene presence-absence matrices",
+            "Core and accessory genome summaries",
+            "Pangenome-derived comparative tables"
+          ]
+        }
+      },
+      {
+        id: "variantCalling",
+        x: 658, y: 620, w: 226, h: 82,
+        group: "structure",
+        optional: true,
+        label: ["Reference-based", "variant calling"],
+        strap: "Optional targeted variant layer when a suitable reference and GFF exist",
+        detail: {
+          category: "Optional structure branch",
+          title: "Reference-based variant calling",
+          summary: "A second reference-driven branch can be run when detailed variant interpretation is useful and appropriate inputs are available.",
+          bullets: [
+            "This branch can add another layer of comparison beyond the Snippy tree.",
+            "It is optional because not every surveillance cohort needs it and not every setting can support it routinely.",
+            "Reference quality and annotation quality shape what can be interpreted here."
+          ],
+          outputs: [
+            "Reference-based variant tables"
+          ]
+        }
+      },
+      {
+        id: "integrate",
+        x: 1002, y: 302, w: 206, h: 126,
+        group: "integration",
+        label: ["Evidence", "integration"],
+        strap: "Reconnect CDS annotations, locus hits, SNP structure and pangenome context",
+        detail: {
+          category: "Interpretation layer",
+          title: "Evidence integration",
+          summary: "This is the key BACTolomew step conceptually: isolate structure and genomic content are brought back together so interpretation is about the cohort, not about disconnected tool outputs.",
+          bullets: [
+            "Annotated CDS features are linked back to marker-hit consensus categories and source labels.",
+            "Locus-level evidence can then be compared against clonal structure and accessory-genome patterns.",
+            "This is what makes the pipeline fit hospital genomic epidemiology rather than simple per-isolate feature calling."
+          ],
+          outputs: [
+            "Contextualized cohort tables that can be interpreted against clone structure",
+            "Unified evidence layer spanning genes, loci and isolates"
+          ]
+        }
+      },
+      {
+        id: "contextOut",
+        x: 1236, y: 136, w: 154, h: 82,
+        group: "output",
+        label: ["Contextualized", "annotation tables"],
+        strap: "CDS-level outputs with consensus classes",
+        detail: {
+          category: "Output",
+          title: "Contextualized annotation outputs",
+          summary: "These outputs tie CDS annotations back to curated biological classes so hits can be interpreted in genomic context rather than as isolated labels.",
+          bullets: [
+            "Useful for comparing resistance, virulence and mobility signals across isolates.",
+            "Most informative when read together with the SNP tree and pangenome branch."
+          ],
+          outputs: [
+            "Annotation tables with category, source and donor-product fields"
+          ]
+        }
+      },
+      {
+        id: "clonalOut",
+        x: 1236, y: 246, w: 154, h: 82,
+        group: "output",
+        label: ["Trees and SNP", "outputs"],
+        strap: "Clonal structure for transmission-scale interpretation",
+        detail: {
+          category: "Output",
+          title: "Clonal structure outputs",
+          summary: "These outputs represent the core relatedness of the cohort and help distinguish clonal spread from horizontally moving content.",
+          bullets: [
+            "Best interpreted together with metadata and resistance-locus information.",
+            "Core SNP structure is necessary but not sufficient for hospital AMR interpretation."
+          ],
+          outputs: [
+            "Core alignments",
+            "RAxML trees",
+            "Variant tables when optional branches are used"
+          ]
+        }
+      },
+      {
+        id: "locusOut",
+        x: 1236, y: 356, w: 154, h: 82,
+        group: "output",
+        label: ["Reference-locus", "hit tables"],
+        strap: "Presence patterns for named islands or larger elements",
+        detail: {
+          category: "Output",
+          title: "Compound-locus outputs",
+          summary: "These tables describe how larger named loci distribute across the cohort.",
+          bullets: [
+            "They help explain whether resistance is carried in shared genomic modules rather than only as single genes.",
+            "Interpretation still depends on assembly quality and catalog scope."
+          ],
+          outputs: [
+            "Per-genome locus hits and related summary tables"
+          ]
+        }
+      },
+      {
+        id: "panOut",
+        x: 1236, y: 466, w: 154, h: 82,
+        group: "output",
+        label: ["Pangenome", "summaries"],
+        strap: "Accessory-genome comparison across isolates",
+        detail: {
+          category: "Output",
+          title: "Pangenome outputs",
+          summary: "These outputs show how gene content changes across the cohort and which accessory signals track with particular clonal groups or resistance profiles.",
+          bullets: [
+            "Especially useful when closely related hospital isolates differ by mobile elements or resistance modules.",
+            "This branch complements the SNP tree rather than competing with it."
+          ],
+          outputs: [
+            "Presence-absence matrices",
+            "Accessory-genome summaries"
+          ]
+        }
+      },
+      {
+        id: "manifest",
+        x: 1236, y: 576, w: 154, h: 82,
+        group: "output",
+        label: ["Run manifest", "and reports"],
+        strap: "Inputs, versions, expected outputs and run status",
+        detail: {
+          category: "Output",
+          title: "Run manifests and reports",
+          summary: "The pipeline records what was run, with which inputs and expected outputs, so cohort analyses remain interpretable and repeatable across batches.",
+          bullets: [
+            "This matters biologically because surveillance evidence needs traceability when comparisons span time and centers.",
+            "The reporting layer does not create biology, but it preserves comparability."
+          ],
+          outputs: [
+            "Run configuration",
+            "Expected outputs manifest",
+            "Run report"
+          ]
+        }
+      }
+    ];
+
+    const edges = [
+      { from: "markerDb", to: "diamondDb" },
+      { from: "compoundDb", to: "diamondDb" },
+      { from: "cohort", to: "bakta" },
+      { from: "cohort", to: "locusScreen" },
+      { from: "cohort", to: "snippy" },
+      { from: "cohort", to: "pangenome" },
+      { from: "refs", to: "snippy", optional: true },
+      { from: "refs", to: "variantCalling", optional: true },
+      { from: "diamondDb", to: "markerScreen" },
+      { from: "diamondDb", to: "locusScreen" },
+      { from: "bakta", to: "markerScreen" },
+      { from: "markerScreen", to: "integrate" },
+      { from: "locusScreen", to: "integrate" },
+      { from: "snippy", to: "integrate" },
+      { from: "pangenome", to: "integrate" },
+      { from: "variantCalling", to: "integrate", optional: true },
+      { from: "integrate", to: "contextOut" },
+      { from: "integrate", to: "clonalOut" },
+      { from: "integrate", to: "locusOut" },
+      { from: "integrate", to: "panOut" },
+      { from: "integrate", to: "manifest" }
+    ];
+
+    const nodeMap = Object.fromEntries(nodes.map((node) => [node.id, node]));
+    const laneLayer = document.getElementById("laneLayer");
+    const edgeLayer = document.getElementById("edgeLayer");
+    const nodeLayer = document.getElementById("nodeLayer");
+    const panel = document.getElementById("detailPanel");
+
+    function wrap(text, limit) {
+      const words = String(text).split(/\s+/);
+      const lines = [];
+      let current = "";
+      words.forEach((word) => {
+        const next = current ? `${current} ${word}` : word;
+        if (next.length > limit && current) {
+          lines.push(current);
+          current = word;
+        } else {
+          current = next;
+        }
+      });
+      if (current) {
+        lines.push(current);
+      }
+      return lines;
+    }
+
+    function renderLanes() {
+      lanes.forEach((lane) => {
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("x", lane.x);
+        rect.setAttribute("y", lane.y);
+        rect.setAttribute("width", lane.w);
+        rect.setAttribute("height", lane.h);
+        rect.setAttribute("rx", "28");
+        rect.setAttribute("ry", "28");
+        rect.setAttribute("fill", lane.fill);
+        rect.setAttribute("class", "lane");
+        laneLayer.appendChild(rect);
+
+        const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        label.setAttribute("x", lane.x + 22);
+        label.setAttribute("y", lane.y + 34);
+        label.setAttribute("class", "lane-label");
+        label.textContent = lane.title;
+        laneLayer.appendChild(label);
+
+        const copy = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        copy.setAttribute("x", lane.x + 22);
+        copy.setAttribute("y", lane.y + 58);
+        copy.setAttribute("class", "lane-copy");
+        wrap(lane.copy, Math.max(26, Math.floor(lane.w / 9.5))).slice(0, 2).forEach((line, idx) => {
+          const tspan = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+          tspan.setAttribute("x", lane.x + 22);
+          tspan.setAttribute("dy", idx === 0 ? 0 : 16);
+          tspan.textContent = line;
+          copy.appendChild(tspan);
+        });
+        laneLayer.appendChild(copy);
+      });
+    }
+
+    function nodeColor(node) {
+      if (node.optional) {
+        return colors.optional;
+      }
+      return colors[node.group] || colors.output;
+    }
+
+    function renderNode(node) {
+      const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      g.setAttribute("class", `node${node.optional ? " optional" : ""}`);
+      g.dataset.id = node.id;
+
+      const band = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      band.setAttribute("x", node.x);
+      band.setAttribute("y", node.y);
+      band.setAttribute("width", "12");
+      band.setAttribute("height", node.h);
+      band.setAttribute("rx", "16");
+      band.setAttribute("ry", "16");
+      band.setAttribute("fill", nodeColor(node));
+      band.setAttribute("class", "node-band");
+      g.appendChild(band);
+
+      const shell = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      shell.setAttribute("x", node.x);
+      shell.setAttribute("y", node.y);
+      shell.setAttribute("width", node.w);
+      shell.setAttribute("height", node.h);
+      shell.setAttribute("rx", "20");
+      shell.setAttribute("ry", "20");
+      shell.setAttribute("class", "node-shell");
+      shell.setAttribute("stroke", nodeColor(node));
+      if (node.optional) {
+        shell.setAttribute("stroke-dasharray", "8 8");
+      }
+      g.appendChild(shell);
+
+      const kicker = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      kicker.setAttribute("x", node.x + 22);
+      kicker.setAttribute("y", node.y + 20);
+      kicker.setAttribute("class", "node-kicker");
+      kicker.textContent = node.optional ? "Optional branch" : node.group;
+      g.appendChild(kicker);
+
+      if (node.optional) {
+        const opt = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        opt.setAttribute("x", node.x + node.w - 46);
+        opt.setAttribute("y", node.y + 20);
+        opt.setAttribute("class", "optional-chip");
+        opt.textContent = "optional";
+        g.appendChild(opt);
+      }
+
+      const title = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      title.setAttribute("x", node.x + 22);
+      title.setAttribute("y", node.y + 46);
+      title.setAttribute("class", "node-title");
+      node.label.forEach((line, idx) => {
+        const tspan = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+        tspan.setAttribute("x", node.x + 22);
+        tspan.setAttribute("dy", idx === 0 ? 0 : 20);
+        tspan.textContent = line;
+        title.appendChild(tspan);
+      });
+      g.appendChild(title);
+
+      const strap = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      strap.setAttribute("x", node.x + 22);
+      strap.setAttribute("y", node.y + node.h - 24);
+      strap.setAttribute("class", "node-strap");
+      wrap(node.strap, Math.max(18, Math.floor((node.w - 44) / 7.5))).slice(0, 2).forEach((line, idx) => {
+        const tspan = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+        tspan.setAttribute("x", node.x + 22);
+        tspan.setAttribute("dy", idx === 0 ? 0 : 14);
+        tspan.textContent = line;
+        strap.appendChild(tspan);
+      });
+      g.appendChild(strap);
+
+      g.addEventListener("click", () => selectNode(node.id));
+      nodeLayer.appendChild(g);
+    }
+
+    function edgePath(edge) {
+      const from = nodeMap[edge.from];
+      const to = nodeMap[edge.to];
+      const sx = from.x + from.w;
+      const sy = from.y + from.h / 2;
+      const tx = to.x;
+      const ty = to.y + to.h / 2;
+      const dx = Math.max(54, (tx - sx) * 0.35);
+      return `M ${sx} ${sy} C ${sx + dx} ${sy}, ${tx - dx} ${ty}, ${tx} ${ty}`;
+    }
+
+    function renderEdges() {
+      edges.forEach((edge, index) => {
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", edgePath(edge));
+        path.setAttribute("class", `edge${edge.optional ? " optional" : ""}`);
+        path.dataset.from = edge.from;
+        path.dataset.to = edge.to;
+        path.dataset.index = index;
+        edgeLayer.appendChild(path);
+      });
+    }
+
+    function escapeHtml(text) {
+      return String(text)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function setPanel(node) {
+      const meta = [
+        `<span class="chip">${escapeHtml(node.detail.category)}</span>`,
+        `<span class="chip">${node.optional ? "Optional branch" : "Default branch"}</span>`
+      ];
+      if (node.id === "cohort" || node.id === "refs" || node.id === "variantCalling") {
+        meta.push(`<span class="chip">Compute-sensitive</span>`);
+      }
+      panel.innerHTML = `
+        <p class="panel-kicker">Selected step</p>
+        <h2>${escapeHtml(node.detail.title)}</h2>
+        <div class="panel-meta">${meta.join("")}</div>
+        <p>${escapeHtml(node.detail.summary)}</p>
+        <div class="panel-section">
+          <h3>Bioinformatic role</h3>
+          <ul>
+            ${node.detail.bullets.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+          </ul>
+        </div>
+        <div class="panel-section">
+          <h3>Main outputs</h3>
+          <ul>
+            ${node.detail.outputs.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+          </ul>
+        </div>
+      `;
+    }
+
+    function clearHighlights() {
+      document.querySelectorAll(".node").forEach((el) => el.classList.remove("active"));
+      document.querySelectorAll(".edge").forEach((el) => el.classList.remove("active"));
+    }
+
+    function selectNode(id) {
+      clearHighlights();
+      const node = nodeMap[id];
+      if (!node) {
+        return;
+      }
+
+      const activeNode = document.querySelector(`.node[data-id="${id}"]`);
+      if (activeNode) {
+        activeNode.classList.add("active");
+      }
+
+      document.querySelectorAll(".edge").forEach((edgeEl) => {
+        if (edgeEl.dataset.from === id || edgeEl.dataset.to === id) {
+          edgeEl.classList.add("active");
+        }
+      });
+
+      setPanel(node);
+    }
+
+    renderLanes();
+    renderEdges();
+    nodes.forEach(renderNode);
+    selectNode("integrate");
+  </script>
+</body>
+</html>

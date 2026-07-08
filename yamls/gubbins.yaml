@@ -1,0 +1,7 @@
+name: bactolomew-gubbins
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - gubbins
+  - fasttree

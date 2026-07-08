@@ -1,0 +1,6 @@
+name: bactolomew-mlst
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - mlst

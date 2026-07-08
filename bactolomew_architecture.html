@@ -1,0 +1,1126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BACTolomew Architecture</title>
+  <style>
+    :root {
+      --bg: #f3efe7;
+      --bg-2: #f9f5ee;
+      --ink: #17212b;
+      --muted: #556473;
+      --line: rgba(23, 33, 43, 0.12);
+      --panel: rgba(255, 255, 255, 0.8);
+      --blue: #2762d6;
+      --cyan: #1d8f8c;
+      --amber: #df8a1d;
+      --red: #cb4b34;
+      --green: #2c7d47;
+      --slate: #2d3d4d;
+      --shadow: 0 18px 40px rgba(37, 44, 54, 0.10);
+      --radius: 26px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at 20% 12%, rgba(39, 98, 214, 0.12), transparent 24%),
+        radial-gradient(circle at 82% 18%, rgba(223, 138, 29, 0.12), transparent 28%),
+        radial-gradient(circle at 74% 84%, rgba(29, 143, 140, 0.12), transparent 24%),
+        linear-gradient(180deg, var(--bg-2), var(--bg));
+      color: var(--ink);
+      font-family: "Avenir Next", "IBM Plex Sans", "Segoe UI", sans-serif;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(23, 33, 43, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(23, 33, 43, 0.035) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+      mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent 94%);
+    }
+
+    .page {
+      width: min(1500px, calc(100vw - 48px));
+      margin: 28px auto 48px;
+      display: grid;
+      gap: 20px;
+    }
+
+    .hero,
+    .panel {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      backdrop-filter: blur(10px);
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      padding: 30px 32px 28px;
+      min-height: 180px;
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 24px;
+      align-items: end;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -60px;
+      top: -50px;
+      width: 300px;
+      height: 300px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(39, 98, 214, 0.18), transparent 68%);
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.7);
+      border: 1px solid rgba(23, 33, 43, 0.10);
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+    }
+
+    h1 {
+      margin: 14px 0 10px;
+      font-size: clamp(46px, 7vw, 76px);
+      line-height: 0.95;
+      letter-spacing: -0.05em;
+      text-transform: uppercase;
+    }
+
+    .hero-sub {
+      margin: 0;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.5;
+      max-width: 46ch;
+    }
+
+    .hero-stack {
+      display: grid;
+      gap: 10px;
+      align-self: stretch;
+    }
+
+    .metric-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      align-self: end;
+    }
+
+    .metric {
+      padding: 14px 14px 12px;
+      border-radius: 18px;
+      border: 1px solid rgba(23, 33, 43, 0.10);
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 24px;
+      letter-spacing: -0.04em;
+    }
+
+    .metric span {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .dash-grid {
+      display: grid;
+      grid-template-columns: 1.45fr 1fr;
+      gap: 20px;
+    }
+
+    .panel {
+      padding: 24px;
+    }
+
+    .panel h2 {
+      margin: 0 0 16px;
+      font-size: 14px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .system-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+    }
+
+    .lane {
+      position: relative;
+      padding: 14px;
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.62);
+      border: 1px solid rgba(23, 33, 43, 0.08);
+    }
+
+    .lane::before {
+      content: "";
+      position: absolute;
+      left: 18px;
+      top: 54px;
+      bottom: 20px;
+      width: 2px;
+      background: linear-gradient(180deg, rgba(23, 33, 43, 0.18), rgba(23, 33, 43, 0.04));
+    }
+
+    .lane-title {
+      position: relative;
+      z-index: 1;
+      display: inline-block;
+      margin: 0 0 14px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      letter-spacing: 0.10em;
+      text-transform: uppercase;
+      color: white;
+    }
+
+    .lane-title.input { background: var(--cyan); }
+    .lane-title.core { background: var(--blue); }
+    .lane-title.data { background: var(--amber); }
+    .lane-title.ui { background: var(--red); }
+
+    .node {
+      position: relative;
+      z-index: 1;
+      margin: 0 0 10px 16px;
+      padding: 12px 12px 11px;
+      border-radius: 16px;
+      border: 1px solid rgba(23, 33, 43, 0.10);
+      background: rgba(255, 255, 255, 0.95);
+    }
+
+    .node::before {
+      content: "";
+      position: absolute;
+      left: -17px;
+      top: 18px;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: white;
+      border: 2px solid currentColor;
+    }
+
+    .node.input { color: var(--cyan); }
+    .node.core { color: var(--blue); }
+    .node.data { color: var(--amber); }
+    .node.ui { color: var(--red); }
+
+    .node strong {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--ink);
+      font-size: 15px;
+      letter-spacing: -0.02em;
+    }
+
+    .chips,
+    .mini-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .chip,
+    .mini-chip,
+    .file-tag {
+      display: inline-flex;
+      align-items: center;
+      padding: 5px 9px;
+      border-radius: 999px;
+      border: 1px solid rgba(23, 33, 43, 0.09);
+      background: rgba(243, 247, 251, 0.95);
+      color: var(--slate);
+      font-size: 11px;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .file-tag {
+      margin-top: 8px;
+      font-family: "IBM Plex Mono", "Menlo", monospace;
+      background: rgba(23, 33, 43, 0.06);
+      color: #33465a;
+    }
+
+    .pipeline-grid {
+      display: grid;
+      grid-template-columns: 1.3fr 0.9fr;
+      gap: 20px;
+    }
+
+    .flow-card,
+    .legend-card {
+      border-radius: 22px;
+      border: 1px solid rgba(23, 33, 43, 0.08);
+      background: rgba(255, 255, 255, 0.68);
+      padding: 18px;
+    }
+
+    .flow-lane {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    .flow-lane:last-child {
+      margin-bottom: 0;
+    }
+
+    .flow-label {
+      margin-bottom: 10px;
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .step {
+      position: relative;
+      min-height: 86px;
+      padding: 12px 14px;
+      border-radius: 18px;
+      border: 1px solid rgba(23, 33, 43, 0.09);
+      background: white;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .step::after {
+      content: "";
+      position: absolute;
+      right: -14px;
+      top: 50%;
+      width: 16px;
+      height: 2px;
+      background: rgba(23, 33, 43, 0.18);
+      transform: translateY(-50%);
+    }
+
+    .flow-lane .step:last-child::after {
+      display: none;
+    }
+
+    .step strong {
+      font-size: 15px;
+      letter-spacing: -0.02em;
+    }
+
+    .step small {
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+
+    .step.req { box-shadow: inset 0 0 0 1px rgba(39, 98, 214, 0.08); }
+    .step.opt { box-shadow: inset 0 0 0 1px rgba(203, 75, 52, 0.08); }
+    .step.out { box-shadow: inset 0 0 0 1px rgba(223, 138, 29, 0.08); }
+
+    .legend-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .legend-item {
+      display: grid;
+      grid-template-columns: 12px 1fr;
+      gap: 10px;
+      align-items: start;
+      font-size: 13px;
+      color: var(--slate);
+    }
+
+    .legend-swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      margin-top: 4px;
+    }
+
+    .legend-swatch.blue { background: var(--blue); }
+    .legend-swatch.red { background: var(--red); }
+    .legend-swatch.amber { background: var(--amber); }
+    .legend-swatch.green { background: var(--green); }
+
+    .stack-wrap {
+      display: grid;
+      grid-template-columns: 0.88fr 1.12fr;
+      gap: 20px;
+      align-items: stretch;
+    }
+
+    .stack-layers {
+      display: flex;
+      flex-direction: column-reverse;
+      gap: 10px;
+    }
+
+    .stack-layer {
+      padding: 14px 16px;
+      border-radius: 18px;
+      border: 1px solid rgba(23, 33, 43, 0.08);
+      color: white;
+    }
+
+    .stack-layer strong {
+      display: block;
+      font-size: 15px;
+      letter-spacing: -0.02em;
+    }
+
+    .stack-layer .mini-chips {
+      margin-top: 8px;
+    }
+
+    .stack-layer .mini-chip {
+      background: rgba(255, 255, 255, 0.16);
+      border-color: rgba(255, 255, 255, 0.18);
+      color: white;
+    }
+
+    .layer-ui { background: linear-gradient(135deg, #ca4f39, #ee7d37); }
+    .layer-data { background: linear-gradient(135deg, #3c6fd8, #2d95cf); }
+    .layer-core { background: linear-gradient(135deg, #2b506f, #345d88); }
+    .layer-tools { background: linear-gradient(135deg, #24855e, #2d9a83); }
+    .layer-storage { background: linear-gradient(135deg, #795720, #b67a24); }
+
+    .folders {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      align-content: start;
+    }
+
+    .folder-card {
+      padding: 13px 12px;
+      border-radius: 18px;
+      border: 1px solid rgba(23, 33, 43, 0.08);
+      background: rgba(255, 255, 255, 0.84);
+      min-height: 94px;
+    }
+
+    .folder-card strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 14px;
+    }
+
+    .folder-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .feature-orbit {
+      position: relative;
+      min-height: 560px;
+      border-radius: 24px;
+      border: 1px solid rgba(23, 33, 43, 0.08);
+      background:
+        radial-gradient(circle at center, rgba(39, 98, 214, 0.12), transparent 32%),
+        rgba(255, 255, 255, 0.70);
+      overflow: hidden;
+    }
+
+    .orbit-ring {
+      position: absolute;
+      inset: 18% 22%;
+      border: 1px dashed rgba(23, 33, 43, 0.12);
+      border-radius: 50%;
+    }
+
+    .orbit-ring.r2 {
+      inset: 7% 10%;
+    }
+
+    .orbit-core {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 220px;
+      height: 220px;
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      background: linear-gradient(135deg, #214fbc, #1f8c97);
+      color: white;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      box-shadow: 0 24px 44px rgba(36, 82, 156, 0.24);
+    }
+
+    .orbit-core strong {
+      font-size: 22px;
+      letter-spacing: -0.03em;
+    }
+
+    .orbit-core span {
+      margin-top: 8px;
+      max-width: 18ch;
+      font-size: 12px;
+      letter-spacing: 0.10em;
+      text-transform: uppercase;
+      opacity: 0.9;
+    }
+
+    .orb {
+      position: absolute;
+      min-width: 128px;
+      padding: 10px 12px;
+      border-radius: 18px;
+      border: 1px solid rgba(23, 33, 43, 0.10);
+      background: rgba(255, 255, 255, 0.95);
+      box-shadow: 0 12px 28px rgba(37, 44, 54, 0.09);
+      text-align: center;
+    }
+
+    .orb strong {
+      display: block;
+      font-size: 14px;
+    }
+
+    .orb small {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .o1 { left: 8%; top: 9%; }
+    .o2 { left: 41%; top: 3%; }
+    .o3 { right: 9%; top: 12%; }
+    .o4 { right: 6%; top: 40%; }
+    .o5 { right: 14%; bottom: 10%; }
+    .o6 { left: 42%; bottom: 5%; }
+    .o7 { left: 8%; bottom: 14%; }
+    .o8 { left: 3%; top: 42%; }
+    .o9 { left: 24%; top: 26%; }
+    .o10 { right: 22%; top: 28%; }
+
+    .usage-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+    }
+
+    .usage-step {
+      position: relative;
+      padding: 16px 16px 18px;
+      border-radius: 20px;
+      border: 1px solid rgba(23, 33, 43, 0.08);
+      background: rgba(255, 255, 255, 0.82);
+      min-height: 130px;
+    }
+
+    .usage-step::after {
+      content: "";
+      position: absolute;
+      right: -12px;
+      top: 32px;
+      width: 14px;
+      height: 2px;
+      background: rgba(23, 33, 43, 0.18);
+    }
+
+    .usage-step:last-child::after {
+      display: none;
+    }
+
+    .usage-num {
+      display: inline-flex;
+      width: 34px;
+      height: 34px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: #17212b;
+      color: white;
+      font-weight: 700;
+      font-size: 14px;
+      margin-bottom: 12px;
+    }
+
+    .usage-step strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 16px;
+    }
+
+    .usage-step .chips {
+      gap: 5px;
+    }
+
+    .footer-note {
+      padding: 12px 2px 2px;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    @media (max-width: 1180px) {
+      .hero,
+      .dash-grid,
+      .pipeline-grid,
+      .stack-wrap {
+        grid-template-columns: 1fr;
+      }
+
+      .system-grid,
+      .usage-grid,
+      .folders {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .flow-lane {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .step:nth-child(2n)::after {
+        display: none;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .page {
+        width: min(100vw - 20px, 1500px);
+        margin: 10px auto 24px;
+      }
+
+      .hero {
+        padding: 22px;
+      }
+
+      .metric-row,
+      .system-grid,
+      .usage-grid,
+      .folders,
+      .flow-lane {
+        grid-template-columns: 1fr;
+      }
+
+      .lane::before,
+      .step::after,
+      .usage-step::after {
+        display: none;
+      }
+
+      .feature-orbit {
+        min-height: auto;
+        padding: 18px;
+      }
+
+      .orbit-core,
+      .orb,
+      .orbit-ring {
+        position: static;
+        transform: none;
+        width: auto;
+        height: auto;
+        margin-bottom: 12px;
+      }
+
+      .orbit-core {
+        border-radius: 22px;
+        padding: 22px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div>
+        <div class="eyebrow">Desktop genomics workbench</div>
+        <h1>BACTolomew</h1>
+        <p class="hero-sub">
+          Assemblies in. Pipeline out. Explorer on top.
+        </p>
+      </div>
+      <div class="hero-stack">
+        <div class="metric-row">
+          <div class="metric">
+            <strong>2</strong>
+            <span>Faces</span>
+          </div>
+          <div class="metric">
+            <strong>8+</strong>
+            <span>Engines</span>
+          </div>
+          <div class="metric">
+            <strong>4</strong>
+            <span>Main stores</span>
+          </div>
+          <div class="metric">
+            <strong>1</strong>
+            <span>Run graph</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>System Map</h2>
+      <div class="system-grid">
+        <div class="lane">
+          <div class="lane-title input">Inputs</div>
+          <div class="node input">
+            <strong>Genome FASTA</strong>
+            <div class="chips">
+              <span class="chip">assemblies</span>
+              <span class="chip">samples</span>
+            </div>
+          </div>
+          <div class="node input">
+            <strong>Marker FASTA</strong>
+            <div class="chips">
+              <span class="chip">categories</span>
+              <span class="chip">catalogs</span>
+            </div>
+          </div>
+          <div class="node input">
+            <strong>Reference loci</strong>
+            <div class="chips">
+              <span class="chip">compound dbs</span>
+            </div>
+          </div>
+          <div class="node input">
+            <strong>Optional metadata</strong>
+            <div class="chips">
+              <span class="chip">metadata csv</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="lane">
+          <div class="lane-title core">Orchestration</div>
+          <div class="node core">
+            <strong>CLI / GUI entry</strong>
+            <span class="file-tag">main.py  CLI.py  startup_dialog.py</span>
+          </div>
+          <div class="node core">
+            <strong>Run builder</strong>
+            <div class="chips">
+              <span class="chip">DataInput</span>
+              <span class="chip">thread plan</span>
+              <span class="chip">resume</span>
+            </div>
+            <span class="file-tag">Runner.py</span>
+          </div>
+          <div class="node core">
+            <strong>Workflow modules</strong>
+            <div class="chips">
+              <span class="chip">Bakta</span>
+              <span class="chip">Panaroo</span>
+              <span class="chip">DIAMOND</span>
+              <span class="chip">fastGEAR</span>
+            </div>
+            <span class="file-tag">src/pipeline/*</span>
+          </div>
+          <div class="node core">
+            <strong>Setup layer</strong>
+            <div class="chips">
+              <span class="chip">conda envs</span>
+              <span class="chip">bakta db</span>
+              <span class="chip">docker image</span>
+            </div>
+            <span class="file-tag">first_time_setup.py</span>
+          </div>
+        </div>
+
+        <div class="lane">
+          <div class="lane-title data">Run products</div>
+          <div class="node data">
+            <strong>Run state</strong>
+            <div class="chips">
+              <span class="chip">run_config.json</span>
+              <span class="chip">run_report.json</span>
+              <span class="chip">expected_outputs.json</span>
+            </div>
+          </div>
+          <div class="node data">
+            <strong>Tool outputs</strong>
+            <div class="chips">
+              <span class="chip">bakta/</span>
+              <span class="chip">panaroo/</span>
+              <span class="chip">trees/</span>
+            </div>
+          </div>
+          <div class="node data">
+            <strong>Derived tables</strong>
+            <div class="chips">
+              <span class="chip">annotations</span>
+              <span class="chip">marker hits</span>
+              <span class="chip">locus hits</span>
+            </div>
+          </div>
+          <div class="node data">
+            <strong>fastGEAR clades</strong>
+            <div class="chips">
+              <span class="chip">sample_clades.tsv</span>
+              <span class="chip">lineage_information.txt</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="lane">
+          <div class="lane-title ui">Explorer</div>
+          <div class="node ui">
+            <strong>Run launcher</strong>
+            <div class="chips">
+              <span class="chip">new run</span>
+              <span class="chip">resume</span>
+              <span class="chip">progress</span>
+            </div>
+            <span class="file-tag">startup_dialog.py  run_progress.py</span>
+          </div>
+          <div class="node ui">
+            <strong>Data load + cache</strong>
+            <div class="chips">
+              <span class="chip">pandas</span>
+              <span class="chip">parquet</span>
+              <span class="chip">fingerprint</span>
+            </div>
+            <span class="file-tag">data.py  cache.py</span>
+          </div>
+          <div class="node ui">
+            <strong>Explorer shell</strong>
+            <div class="chips">
+              <span class="chip">filters</span>
+              <span class="chip">tree</span>
+              <span class="chip">table</span>
+              <span class="chip">panels</span>
+            </div>
+            <span class="file-tag">explorer_window.py  explorer_ui.py</span>
+          </div>
+          <div class="node ui">
+            <strong>Views</strong>
+            <div class="chips">
+              <span class="chip">IGV</span>
+              <span class="chip">map</span>
+              <span class="chip">panaroo</span>
+              <span class="chip">dialogs</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="dash-grid">
+      <section class="panel">
+        <h2>Process Graph</h2>
+        <div class="pipeline-grid">
+          <div class="flow-card">
+            <div class="flow-label">Main run</div>
+            <div class="flow-lane">
+              <div class="step req">
+                <small>annotate</small>
+                <strong>Bakta</strong>
+                <div class="mini-chips">
+                  <span class="mini-chip">json</span>
+                  <span class="mini-chip">gff3</span>
+                </div>
+              </div>
+              <div class="step req">
+                <small>pan-genome</small>
+                <strong>Panaroo</strong>
+                <div class="mini-chips">
+                  <span class="mini-chip">presence</span>
+                  <span class="mini-chip">core aln</span>
+                </div>
+              </div>
+              <div class="step req">
+                <small>clades</small>
+                <strong>fastGEAR</strong>
+                <div class="mini-chips">
+                  <span class="mini-chip">docker</span>
+                  <span class="mini-chip">sample_clades.tsv</span>
+                </div>
+              </div>
+              <div class="step req">
+                <small>search</small>
+                <strong>DIAMOND</strong>
+                <div class="mini-chips">
+                  <span class="mini-chip">markers</span>
+                  <span class="mini-chip">loci</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="flow-label">Derived layer</div>
+            <div class="flow-lane">
+              <div class="step out">
+                <small>collect</small>
+                <strong>Annotations</strong>
+                <div class="mini-chips">
+                  <span class="mini-chip">ids</span>
+                  <span class="mini-chip">categories</span>
+                </div>
+              </div>
+              <div class="step out">
+                <small>persist</small>
+                <strong>Run JSON</strong>
+                <div class="mini-chips">
+                  <span class="mini-chip">config</span>
+                  <span class="mini-chip">report</span>
+                </div>
+              </div>
+              <div class="step out">
+                <small>cache</small>
+                <strong>Parquet</strong>
+                <div class="mini-chips">
+                  <span class="mini-chip">annotations</span>
+                  <span class="mini-chip">hits</span>
+                </div>
+              </div>
+              <div class="step out">
+                <small>open</small>
+                <strong>Explorer</strong>
+                <div class="mini-chips">
+                  <span class="mini-chip">qt</span>
+                  <span class="mini-chip">polars</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="flow-label">Required completion</div>
+            <div class="flow-lane">
+              <div class="step out">
+                <small>view</small>
+                <strong>Panaroo tree</strong>
+                <div class="mini-chips">
+                  <span class="mini-chip">legacy if present</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="legend-card">
+            <div class="flow-label">Run control</div>
+            <div class="legend-list">
+              <div class="legend-item">
+                <span class="legend-swatch blue"></span>
+                <div>Step state: start / success / failed / partial</div>
+              </div>
+              <div class="legend-item">
+                <span class="legend-swatch green"></span>
+                <div>Resume: reuse existing outputs when validation passes</div>
+              </div>
+              <div class="legend-item">
+                <span class="legend-swatch amber"></span>
+                <div>Progress: expected outputs grouped by tool family</div>
+              </div>
+              <div class="legend-item">
+                <span class="legend-swatch red"></span>
+                <div>Run lock + stop file guard one active run at a time</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Stack + Storage</h2>
+        <div class="stack-wrap">
+          <div class="stack-layers">
+            <div class="stack-layer layer-storage">
+              <strong>Storage</strong>
+              <div class="mini-chips">
+                <span class="mini-chip">JSON</span>
+                <span class="mini-chip">TSV</span>
+                <span class="mini-chip">CSV</span>
+                <span class="mini-chip">Parquet</span>
+                <span class="mini-chip">GeoJSON</span>
+              </div>
+            </div>
+            <div class="stack-layer layer-tools">
+              <strong>Engines</strong>
+              <div class="mini-chips">
+                <span class="mini-chip">Bakta</span>
+                <span class="mini-chip">DIAMOND</span>
+                <span class="mini-chip">Panaroo</span>
+                <span class="mini-chip">fastGEAR</span>
+                <span class="mini-chip">Docker</span>
+              </div>
+            </div>
+            <div class="stack-layer layer-core">
+              <strong>Core Python</strong>
+              <div class="mini-chips">
+                <span class="mini-chip">Runner</span>
+                <span class="mini-chip">workflow modules</span>
+                <span class="mini-chip">catalogs</span>
+                <span class="mini-chip">logging</span>
+              </div>
+            </div>
+            <div class="stack-layer layer-data">
+              <strong>Data engine</strong>
+              <div class="mini-chips">
+                <span class="mini-chip">pandas</span>
+                <span class="mini-chip">polars</span>
+                <span class="mini-chip">numpy</span>
+                <span class="mini-chip">pyarrow</span>
+              </div>
+            </div>
+            <div class="stack-layer layer-ui">
+              <strong>Desktop UI</strong>
+              <div class="mini-chips">
+                <span class="mini-chip">PyQt6</span>
+                <span class="mini-chip">pyqtgraph</span>
+                <span class="mini-chip">tree view</span>
+                <span class="mini-chip">dialogs</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="folders">
+            <div class="folder-card">
+              <strong>/src/pipeline</strong>
+              <p>runner, tools, parsing, workflow wrappers</p>
+            </div>
+            <div class="folder-card">
+              <strong>/src/annotation_explorer_polars</strong>
+              <p>launcher, cache, views, controllers, explorer shell</p>
+            </div>
+            <div class="folder-card">
+              <strong>/runs</strong>
+              <p>one folder per sample set, tool outputs, trees, reports</p>
+            </div>
+            <div class="folder-card">
+              <strong>/cache</strong>
+              <p>ui state, per-run parquet tables, fingerprints</p>
+            </div>
+            <div class="folder-card">
+              <strong>/catalogs + /databases</strong>
+              <p>marker catalogs, compound catalogs, local fasta assets</p>
+            </div>
+            <div class="folder-card">
+              <strong>/envs + /yamls</strong>
+              <p>conda envs per tool family, first-time setup source</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <section class="panel">
+      <h2>Explorer Features</h2>
+      <div class="feature-orbit">
+        <div class="orbit-ring"></div>
+        <div class="orbit-ring r2"></div>
+        <div class="orbit-core">
+          <strong>Annotation Explorer</strong>
+          <span>sample tree + table + linked panels</span>
+        </div>
+        <div class="orb o1"><strong>Sample tree</strong><small>metadata + counts</small></div>
+        <div class="orb o2"><strong>Filters</strong><small>sample + annotation</small></div>
+        <div class="orb o3"><strong>Annotation table</strong><small>search + columns</small></div>
+        <div class="orb o4"><strong>IGV-like view</strong><small>context / contig / global</small></div>
+        <div class="orb o5"><strong>Geo map</strong><small>sample metadata</small></div>
+        <div class="orb o6"><strong>Pan heatmap</strong><small>core / accessory</small></div>
+        <div class="orb o7"><strong>Similarity map</strong><small>presence distance</small></div>
+        <div class="orb o8"><strong>Detail dialogs</strong><small>hover + inspect</small></div>
+        <div class="orb o9"><strong>Structural view</strong><small>presence blocks</small></div>
+        <div class="orb o10"><strong>Entropy track</strong><small>Panaroo-derived</small></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>How To Use</h2>
+      <div class="usage-grid">
+        <div class="usage-step">
+          <div class="usage-num">01</div>
+          <strong>First setup</strong>
+          <div class="chips">
+            <span class="chip">conda envs</span>
+            <span class="chip">bakta db</span>
+            <span class="chip">fastGEAR image</span>
+          </div>
+        </div>
+        <div class="usage-step">
+          <div class="usage-num">02</div>
+          <strong>Start / Resume</strong>
+          <div class="chips">
+            <span class="chip">run cards</span>
+            <span class="chip">resume missing steps</span>
+          </div>
+        </div>
+        <div class="usage-step">
+          <div class="usage-num">03</div>
+          <strong>Monitor</strong>
+          <div class="chips">
+            <span class="chip">expected outputs</span>
+            <span class="chip">tool groups</span>
+            <span class="chip">stop file</span>
+          </div>
+        </div>
+        <div class="usage-step">
+          <div class="usage-num">04</div>
+          <strong>Open run</strong>
+          <div class="chips">
+            <span class="chip">metadata csv</span>
+            <span class="chip">cache build</span>
+          </div>
+        </div>
+        <div class="usage-step">
+          <div class="usage-num">05</div>
+          <strong>Explore</strong>
+          <div class="chips">
+            <span class="chip">tree</span>
+            <span class="chip">table</span>
+            <span class="chip">map</span>
+            <span class="chip">panels</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="footer-note">
+      Code-backed snapshot: main.py, pipeline/Runner.py, pipeline/*Workflow.py, annotation_explorer_polars/*
+    </div>
+  </main>
+</body>
+</html>

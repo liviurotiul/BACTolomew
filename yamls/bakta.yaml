@@ -1,0 +1,14 @@
+name: bactolomew-bakta
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11.14
+  - bakta=1.10.4
+  - biopython=1.85
+  - pyhmmer=0.11.0
+  - pyrodigal=3.6.3.post1
+  - diamond=2.1.10
+  - blast=2.16.0
+  - blast-legacy=2.2.26
+  - ncbi-amrfinderplus=4.0.23

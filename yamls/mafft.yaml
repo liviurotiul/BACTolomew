@@ -1,0 +1,6 @@
+name: bactolomew-mafft
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - mafft

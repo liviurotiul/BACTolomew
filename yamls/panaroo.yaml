@@ -1,0 +1,6 @@
+name: bactolomew-panaroo
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - panaroo

@@ -1,0 +1,6 @@
+name: bactolomew-mobsuite
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - mob_suite

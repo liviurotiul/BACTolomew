@@ -1,0 +1,6 @@
+name: bactolomew-chewbbaca
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - chewbbaca

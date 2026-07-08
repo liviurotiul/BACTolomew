@@ -1,0 +1,7 @@
+name: bactolomew-assembly-qc
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - quast
+  - checkm2

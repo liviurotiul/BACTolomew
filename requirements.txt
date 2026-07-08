@@ -1,0 +1,19 @@
+# Host (thin) Python environment for BACTolomew: the PyQt6/WebEngine desktop GUI and the
+# in-process pipeline orchestration. All bioinformatics TOOLS run in the container image
+# (see docker/Dockerfile) and are NOT installed here.
+#
+# Install:  python -m venv .venv && .venv/bin/pip install -r requirements.txt
+# Note: PyQt6-WebEngine is a SEPARATE pip package (unlike conda's all-in-one pyqt).
+
+PyQt6~=6.10
+PyQt6-WebEngine~=6.10
+
+polars>=1.36
+pandas>=2.2,<3
+numpy>=1.26,<2
+pyarrow>=15
+scipy>=1.12
+
+matplotlib>=3.9
+pyqtgraph>=0.13
+biopython>=1.84

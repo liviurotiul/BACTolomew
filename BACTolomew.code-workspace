@@ -1,0 +1,19 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../../../../../Data/BACTolomewDB"
+		},
+		{
+			"path": "../../../../../Data/cgmlst"
+		},
+		{
+			"path": "../../../../../Data/ST492"
+		}
+	],
+	"settings": {
+		"r.lsp.promptToInstall": false
+	}
+}

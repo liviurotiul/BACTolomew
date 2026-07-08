@@ -1,0 +1,43 @@
+# ---------------------------------------------------------------------------
+# BACTolomew .gitignore
+# Large data, prebuilt tool environments and pipeline outputs are NOT tracked.
+# ---------------------------------------------------------------------------
+
+# Conda tool environments (~24G, machine-specific; tools run via Docker at runtime)
+/envs/
+
+# Reference databases (~22G; fetched/seeded during first-time setup)
+/DB/
+
+# Pipeline run outputs (~25G)
+/runs/
+
+# Caches
+/cache/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Python virtual environments
+.venv/
+venv/
+.env
+
+# Generated, machine-specific config (written by first-time setup)
+/bactolomew_config.json
+
+# Map backend experiment outputs (source kept, rendered artifacts ignored)
+/map_tests/out/
+
+# Editor / tooling / OS junk
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.codex
