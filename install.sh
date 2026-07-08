@@ -6,29 +6,59 @@
 # or pulls on first launch -- this script does NOT install any bioinformatics tools.
 #
 # Usage:
-#   bash install.sh [--source <repo-dir|tarball>] [--dir <install-dir>]
+#   # From a clone (recommended for development):
+#   git clone https://github.com/liviurotiul/BACTolomew.git && cd BACTolomew && bash install.sh
 #
-# Today (repo not yet on GitHub): run from inside a checkout, or pass --source <dir>.
-# Later (once published): the downloaded bootstrap will `git clone` GITHUB_URL first.
+#   # Bootstrap without cloning first (installs into ~/BACTolomew by default):
+#   curl -fsSL https://raw.githubusercontent.com/liviurotiul/BACTolomew/main/install.sh | bash
+#
+#   # Offline / custom source or target:
+#   bash install.sh [--source <repo-dir|tarball>] [--dir <install-dir>] [--ref <branch|tag>]
+#
+# When run outside a checkout and without --source, the installer clones GITHUB_URL.
 set -euo pipefail
-
-GITHUB_URL="https://github.com/liviurotiul/BACTolomew.git"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SOURCE=""
-INSTALL_DIR=""
-
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --source) SOURCE="$2"; shift 2 ;;
-    --dir)    INSTALL_DIR="$2"; shift 2 ;;
-    -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "unknown arg: $1" >&2; exit 2 ;;
-  esac
-done
 
 say() { printf '\033[1;34m[install]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[install] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+GITHUB_URL="https://github.com/liviurotiul/BACTolomew.git"
+GITHUB_REF=""            # branch/tag to clone (empty = repo default branch)
+
+# Self-contained help so it works even over `curl ... | bash -s -- --help` (no file on disk).
+usage() {
+  cat <<EOF
+BACTolomew host installer.
+
+Usage:
+  # From a clone (recommended for development):
+  git clone $GITHUB_URL && cd BACTolomew && bash install.sh
+
+  # Bootstrap without cloning first (installs into ~/BACTolomew by default):
+  curl -fsSL https://raw.githubusercontent.com/liviurotiul/BACTolomew/main/install.sh | bash
+
+  # Offline / custom source or target:
+  bash install.sh [--source <repo-dir|tarball>] [--dir <install-dir>] [--ref <branch|tag>]
+
+Outside a checkout and without --source, the installer clones the repo.
+EOF
+}
+
+SELF="${BASH_SOURCE[0]:-$0}"   # this script's path ("bash" when piped via curl|bash)
+SCRIPT_DIR="$(cd "$(dirname "$SELF")" 2>/dev/null && pwd || echo "$PWD")"
+SOURCE=""
+INSTALL_DIR=""
+
+need_val() { [ "$#" -ge 2 ] || die "$1 requires a value"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --source)       need_val "$@"; SOURCE="$2"; shift 2 ;;
+    --dir)          need_val "$@"; INSTALL_DIR="$2"; shift 2 ;;
+    --ref|--branch) need_val "$@"; GITHUB_REF="$2"; shift 2 ;;
+    -h|--help)      usage; exit 0 ;;
+    *) die "unknown argument: $1 (see --help)" ;;
+  esac
+done
 
 # --- 1. prerequisites -------------------------------------------------------
 command -v python3 >/dev/null || die "python3 not found (need >= 3.11)."
@@ -44,27 +74,84 @@ fi
 say "Container runtime available: $RUNTIME_FOUND"
 
 # --- 2. obtain the code -----------------------------------------------------
-resolve_source() {
-  if [ -n "$SOURCE" ]; then echo "$SOURCE"; return; fi
-  if [ -f "$SCRIPT_DIR/src/annotation_explorer_polars/app.py" ]; then echo "$SCRIPT_DIR"; return; fi
-  die "No --source given and this script is not inside a checkout.
-  Pass --source <repo-dir-or-tarball> (the repo is not on GitHub yet)."
-}
-SRC="$(resolve_source)"
+# Precedence: explicit --source  >  running inside a checkout  >  clone from GitHub.
+have_checkout() { [ -f "$1/src/annotation_explorer_polars/app.py" ]; }
+dir_empty()     { [ ! -e "$1" ] || [ -z "$(ls -A "$1" 2>/dev/null)" ]; }
 
-if [ -z "$INSTALL_DIR" ]; then
-  if [ -f "$SRC/src/annotation_explorer_polars/app.py" ]; then INSTALL_DIR="$SRC"   # in-place
-  else INSTALL_DIR="$HOME/BACTolomew"; fi
-fi
-
-if [ ! -f "$INSTALL_DIR/src/annotation_explorer_polars/app.py" ]; then
-  say "Copying code from $SRC -> $INSTALL_DIR"
-  mkdir -p "$INSTALL_DIR"
-  case "$SRC" in
-    *.tar.gz|*.tgz) tar -xzf "$SRC" -C "$INSTALL_DIR" --strip-components=1 ;;
-    *) cp -a "$SRC/." "$INSTALL_DIR/" ;;
+# Copy a repo directory or tarball into <dest>. For a git checkout, copy only tracked
+# files (git archive) so gitignored data -- envs/ DB/ runs/ (tens of GB) -- is skipped.
+copy_tree() {  # copy_tree <src> <dest>
+  local src="$1" dest="$2"
+  mkdir -p "$dest" || die "cannot create $dest"
+  case "$src" in
+    *.tar.gz|*.tgz|*.tar)
+      say "Extracting $src -> $dest"
+      tar -xf "$src" -C "$dest" --strip-components=1 || die "failed to extract $src" ;;
+    *)
+      [ -d "$src" ] || die "--source '$src' is not a directory or a .tar.gz/.tgz/.tar tarball."
+      if [ -d "$src/.git" ] && command -v git >/dev/null; then
+        say "Copying tracked files $src -> $dest (git archive; skips gitignored data)"
+        git -C "$src" archive --format=tar HEAD | tar -x -C "$dest" || die "failed to copy from $src"
+      else
+        say "Copying $src -> $dest"
+        cp -a "$src/." "$dest/" || die "failed to copy from $src"
+      fi ;;
   esac
+}
+
+# Determine the code source.
+if [ -n "$SOURCE" ]; then
+  SRC="$SOURCE"; SRC_KIND="source"
+elif have_checkout "$SCRIPT_DIR"; then
+  SRC="$SCRIPT_DIR"; SRC_KIND="inplace"
+else
+  SRC=""; SRC_KIND="clone"
 fi
+
+# Determine the install dir (default: the checkout itself for in-place; else ~/BACTolomew).
+if [ -z "$INSTALL_DIR" ]; then
+  if [ "$SRC_KIND" = "inplace" ]; then INSTALL_DIR="$SRC"
+  else INSTALL_DIR="${HOME:-$PWD}/BACTolomew"; fi
+fi
+mkdir -p "$INSTALL_DIR" || die "cannot create install dir: $INSTALL_DIR"
+INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd)" || die "cannot access install dir: $INSTALL_DIR"
+
+if [ -n "$GITHUB_REF" ] && [ "$SRC_KIND" != "clone" ]; then
+  say "note: --ref '$GITHUB_REF' only applies when cloning; ignoring for $SRC_KIND install."
+fi
+
+# Never write into a non-empty directory that is not already a BACTolomew checkout.
+if ! dir_empty "$INSTALL_DIR" && ! have_checkout "$INSTALL_DIR"; then
+  die "Target $INSTALL_DIR is not empty and is not a BACTolomew checkout.
+  Choose an empty --dir <path>, or clear it first."
+fi
+
+case "$SRC_KIND" in
+  inplace)
+    if [ "$SRC" = "$INSTALL_DIR" ]; then say "Installing in-place at $INSTALL_DIR"
+    else copy_tree "$SRC" "$INSTALL_DIR"; fi ;;
+  source)
+    copy_tree "$SRC" "$INSTALL_DIR" ;;
+  clone)
+    command -v git >/dev/null || die "git not found (needed to clone $GITHUB_URL)."
+    if have_checkout "$INSTALL_DIR"; then
+      say "Reusing existing checkout at $INSTALL_DIR"
+    else
+      say "Cloning $GITHUB_URL${GITHUB_REF:+ (ref: $GITHUB_REF)} -> $INSTALL_DIR"
+      # Remove a partial clone if the clone fails or is interrupted.
+      CLONE_TGT="$INSTALL_DIR"
+      trap 'rc=$?; [ -n "${CLONE_TGT:-}" ] && ! have_checkout "$CLONE_TGT" && rm -rf "$CLONE_TGT"; exit $rc' EXIT INT TERM
+      if [ -n "$GITHUB_REF" ]; then
+        git clone --branch "$GITHUB_REF" "$GITHUB_URL" "$INSTALL_DIR" || die "clone failed (ref: $GITHUB_REF)"
+      else
+        git clone "$GITHUB_URL" "$INSTALL_DIR" || die "clone failed"
+      fi
+      CLONE_TGT=""; trap - EXIT INT TERM
+    fi ;;
+esac
+
+have_checkout "$INSTALL_DIR" \
+  || die "Could not find $INSTALL_DIR/src/annotation_explorer_polars/app.py after obtaining the code."
 say "Install dir: $INSTALL_DIR"
 
 # --- 3. venv + deps ---------------------------------------------------------

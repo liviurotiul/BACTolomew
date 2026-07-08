@@ -43,29 +43,48 @@ Conda environments are defined in [`yamls/`](yamls/) and baked into the containe
 
 ## Installation
 
+Clone and install (recommended):
+
 ```bash
 git clone https://github.com/liviurotiul/BACTolomew.git
 cd BACTolomew
 bash install.sh
 ```
 
-`install.sh` verifies prerequisites, creates a thin virtual environment (`.venv`) and installs
-the host dependencies. The container image with the bioinformatics tools is built or pulled on
-first launch.
+Or bootstrap without cloning first — the installer clones the repo into `~/BACTolomew`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/liviurotiul/BACTolomew/main/install.sh | bash
+```
+
+`install.sh` verifies prerequisites, obtains the code (in-place if run from a checkout,
+otherwise `git clone`), creates a thin virtual environment (`.venv`) and installs the host
+dependencies. The container image with the bioinformatics tools is built or pulled on first
+launch. Flags: `--dir <install-dir>`, `--ref <branch|tag>`, `--source <repo-dir|tarball>`
+(offline installs).
 
 To set up the host venv manually:
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv      # Python >= 3.11 recommended
 .venv/bin/pip install -r requirements.txt
 ```
 
 ## Usage
 
-### Annotation explorer (GUI)
+After `install.sh`, the simplest way to launch is the generated wrapper:
 
 ```bash
-.venv/bin/python -m annotation_explorer_polars.app
+./bactolomew
+```
+
+### Annotation explorer (GUI)
+
+The GUI package lives under `src/`, so run it from there (this is what `./bactolomew` does):
+
+```bash
+cd src
+../.venv/bin/python -m annotation_explorer_polars.app
 ```
 
 On first launch a **first-time setup** dialog seeds the reference databases and verifies the
@@ -76,6 +95,22 @@ tool environments, then writes a machine-local `bactolomew_config.json` (git-ign
 ```bash
 .venv/bin/python src/main.py --help
 ```
+
+## Development
+
+Run straight from a local checkout (no `install.sh`):
+
+```bash
+git clone https://github.com/liviurotiul/BACTolomew.git
+cd BACTolomew
+python3 -m venv .venv                        # Python >= 3.11 recommended
+.venv/bin/pip install -r requirements.txt
+cd src && ../.venv/bin/python -m annotation_explorer_polars.app
+```
+
+The module must be launched from `src/` (its parent is the import root). To run against the
+container tools you still need Docker/Singularity and the `bactolomew-tools` image
+(`bash docker/build.sh`).
 
 ## Data & databases
 
