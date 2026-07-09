@@ -186,12 +186,11 @@ class SettingsDialog(QtWidgets.QDialog):
 
     # ---- actions ----
     def _add_schema(self) -> None:
-        QtWidgets.QMessageBox.information(
-            self,
-            "Add schema",
-            "Importing a new cgMLST schema (single FASTA, a folder of allele FASTAs, or a "
-            "prebuilt chewBBACA schema) is being added in the next update.",
-        )
+        from .schema_import_dialog import AddSchemaDialog
+
+        dlg = AddSchemaDialog(self)
+        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            self._reload_schema_list()
 
     def _save(self) -> None:
         from pipeline.ToolEnv import save_app_config
