@@ -2839,7 +2839,8 @@ class RaxmlTreeView(QtWidgets.QGraphicsView):
             rect = self.sceneRect()
         if rect.isNull() or rect.isEmpty():
             return
-        self.fitInView(rect, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
+        # Stretch to fill the window in both dimensions (no aspect lock).
+        self.fitInView(rect, QtCore.Qt.AspectRatioMode.IgnoreAspectRatio)
 
     def fit_to_window(self) -> None:
         """Public: re-enable auto-fit and scale the tree to the window."""
