@@ -525,6 +525,9 @@ class RaxmlTreeView(QtWidgets.QGraphicsView):
 
         self._root: Optional[_TreeNode] = None
         self._root_version = 0
+        # When True, the whole tree is scaled to fit the viewport on render/resize.
+        # Manual wheel-zoom turns this off until the next tree/layout load.
+        self._auto_fit = True
         self._active_samples: Optional[set[str]] = None
         self._reference_sample: Optional[str] = None
         self._leaf_group_map: Dict[str, str] = {}
@@ -581,6 +584,7 @@ class RaxmlTreeView(QtWidgets.QGraphicsView):
         parser = _NewickParser(str(text or ""))
         self._root = parser.parse()
         self._root_version += 1
+        self._auto_fit = True  # a freshly loaded tree starts fitted to the window
         self._invalidate_render_root_cache()
         self._render_tree()
 
@@ -1881,6 +1885,9 @@ class RaxmlTreeView(QtWidgets.QGraphicsView):
         elif pending_active:
             self._set_active_leaves(pending_active, emit_signals=False)
 
+        if self._auto_fit:
+            self._fit_to_viewport()
+
         self.viewChanged.emit()
 
     def _render_tree_circular(
@@ -2820,6 +2827,25 @@ class RaxmlTreeView(QtWidgets.QGraphicsView):
         self._set_active_leaves(None, emit_signals=True)
         super().leaveEvent(event)
 
+    def _fit_to_viewport(self) -> None:
+        """Scale the whole tree so it fits the current viewport (keeping aspect)."""
+        if self._root is None:
+            return
+        viewport = self.viewport()
+        if viewport is None or viewport.width() <= 0 or viewport.height() <= 0:
+            return
+        rect = self._scene.itemsBoundingRect()
+        if rect.isNull() or rect.isEmpty():
+            rect = self.sceneRect()
+        if rect.isNull() or rect.isEmpty():
+            return
+        self.fitInView(rect, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
+
+    def fit_to_window(self) -> None:
+        """Public: re-enable auto-fit and scale the tree to the window."""
+        self._auto_fit = True
+        self._fit_to_viewport()
+
     def wheelEvent(self, event: QtGui.QWheelEvent) -> None:
         delta = event.angleDelta().y()
         if delta == 0:
@@ -2831,12 +2857,23 @@ class RaxmlTreeView(QtWidgets.QGraphicsView):
         if new_scale < 0.03 or new_scale > 120.0:
             event.accept()
             return
+        self._auto_fit = False  # manual zoom takes over until the tree reloads
         self.scale(factor, factor)
         self.viewChanged.emit()
         event.accept()
 
+    def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent) -> None:
+        # Double-click on empty background re-fits the tree to the window.
+        if self.itemAt(event.pos()) is None:
+            self.fit_to_window()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
+        if self._auto_fit:
+            self._fit_to_viewport()
         self.viewChanged.emit()
 
     def scrollContentsBy(self, dx: int, dy: int) -> None:
