@@ -507,10 +507,12 @@ class RaxmlTreeView(QtWidgets.QGraphicsView):
         self._scene = QtWidgets.QGraphicsScene(self)
         self.setScene(self._scene)
         self.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-        self.setDragMode(QtWidgets.QGraphicsView.DragMode.ScrollHandDrag)
+        # Starts fitted, so no hand-drag / scrollbars until the user zooms in
+        # (see _update_interaction_mode). ScrollHandDrag returns on manual zoom.
+        self.setDragMode(QtWidgets.QGraphicsView.DragMode.NoDrag)
         self.setViewportUpdateMode(QtWidgets.QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate)
-        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setMinimumWidth(280)
@@ -528,6 +530,7 @@ class RaxmlTreeView(QtWidgets.QGraphicsView):
         # When True, the whole tree is scaled to fit the viewport on render/resize.
         # Manual wheel-zoom turns this off until the next tree/layout load.
         self._auto_fit = True
+        self._fitting = False  # re-entrancy guard for fitInView/resize
         self._active_samples: Optional[set[str]] = None
         self._reference_sample: Optional[str] = None
         self._leaf_group_map: Dict[str, str] = {}
@@ -2827,9 +2830,21 @@ class RaxmlTreeView(QtWidgets.QGraphicsView):
         self._set_active_leaves(None, emit_signals=True)
         super().leaveEvent(event)
 
+    def _update_interaction_mode(self) -> None:
+        """When fitted there is nothing to pan, so drop hand-drag + scrollbars;
+        only re-enable them once the user has zoomed in manually."""
+        if self._auto_fit:
+            self.setDragMode(QtWidgets.QGraphicsView.DragMode.NoDrag)
+            self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        else:
+            self.setDragMode(QtWidgets.QGraphicsView.DragMode.ScrollHandDrag)
+            self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
     def _fit_to_viewport(self) -> None:
-        """Scale the whole tree so it fits the current viewport (keeping aspect)."""
-        if self._root is None:
+        """Stretch the whole tree to fill the current viewport (both dimensions)."""
+        if self._root is None or self._fitting:
             return
         viewport = self.viewport()
         if viewport is None or viewport.width() <= 0 or viewport.height() <= 0:
@@ -2839,8 +2854,16 @@ class RaxmlTreeView(QtWidgets.QGraphicsView):
             rect = self.sceneRect()
         if rect.isNull() or rect.isEmpty():
             return
-        # Stretch to fill the window in both dimensions (no aspect lock).
-        self.fitInView(rect, QtCore.Qt.AspectRatioMode.IgnoreAspectRatio)
+        # Guard against the fitInView <-> ScrollBarAsNeeded feedback loop: turn
+        # scrollbars off first (via _update_interaction_mode) so the fit targets
+        # the full viewport, and suppress re-entrant resize-driven refits.
+        self._fitting = True
+        try:
+            self._update_interaction_mode()
+            # Stretch to fill the window in both dimensions (no aspect lock).
+            self.fitInView(rect, QtCore.Qt.AspectRatioMode.IgnoreAspectRatio)
+        finally:
+            self._fitting = False
 
     def fit_to_window(self) -> None:
         """Public: re-enable auto-fit and scale the tree to the window."""
@@ -2858,7 +2881,9 @@ class RaxmlTreeView(QtWidgets.QGraphicsView):
         if new_scale < 0.03 or new_scale > 120.0:
             event.accept()
             return
-        self._auto_fit = False  # manual zoom takes over until the tree reloads
+        if self._auto_fit:
+            self._auto_fit = False  # manual zoom takes over; enable pan + scrollbars
+            self._update_interaction_mode()
         self.scale(factor, factor)
         self.viewChanged.emit()
         event.accept()
