@@ -9,7 +9,13 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping
 
-from pipeline.ToolEnv import configured_chewbbaca_settings, get_tool_env_prefix, project_root
+from pipeline.ToolEnv import (
+    configured_chewbbaca_settings,
+    current_container_context,
+    get_tool_env_prefix,
+    project_root,
+    tool_cmd,
+)
 
 CHEWBBACA_OUT_FILES: tuple[str, ...] = (
     "results_alleles.tsv",
@@ -354,6 +360,13 @@ def _candidate_cmds(*args: str) -> list[list[str]]:
 
 
 def _resolve_chewbbaca_base_cmd() -> list[str] | None:
+    # Inside a container runtime, chewBBACA runs in the tools image's `chewbbaca`
+    # env exactly like every other tool (the run's dirs are bind-mounted at
+    # identical paths), so no host env or PATH probe is needed.
+    ctx = current_container_context()
+    if ctx is not None and ctx.runtime in ("docker", "singularity"):
+        return tool_cmd("chewbbaca", "chewBBACA.py")
+    # Native / dev runtime: probe the configured host env or PATH.
     for probe_args in (("--help",), ("--version",)):
         for cmd in _candidate_cmds(*probe_args):
             try:
