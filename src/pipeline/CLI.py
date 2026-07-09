@@ -20,6 +20,7 @@ from pipeline.ToolEnv import (
     configured_chewbbaca_settings,
     configured_fastgear_settings,
     configured_mobsuite_settings,
+    effective_core_budget,
 )
 
 
@@ -63,7 +64,7 @@ def workflow_cfg(args, logger) -> DataInput:
         marker_dir = Path(args.queries).expanduser().resolve()
         ce_path = Path(args.compound).expanduser().resolve()
         bakta_db = args.bakta_db
-        cpu_total = os.cpu_count() or 1
+        cpu_total = effective_core_budget()  # min(physical cores, configured max_threads)
         dmnd_threads = args.dmnd_threads or cpu_total
         bakta_threads = args.bakta_threads or cpu_total
         total_cores = args.cores or cpu_total

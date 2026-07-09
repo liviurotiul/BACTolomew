@@ -47,6 +47,69 @@ def _load_app_config() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _deep_merge(base: dict, updates: Mapping[str, Any]) -> dict:
+    for key, value in updates.items():
+        if isinstance(value, Mapping) and isinstance(base.get(key), Mapping):
+            base[key] = _deep_merge(dict(base[key]), value)
+        else:
+            base[key] = value
+    return base
+
+
+def save_app_config(updates: Mapping[str, Any]) -> dict:
+    """Merge `updates` into bactolomew_config.json and write it back atomically.
+
+    Unlike first-time setup (which rewrites the whole file), this preserves every
+    existing key — nested dicts are merged, so e.g. updating resources.max_threads
+    leaves resources.max_ram_gb and all other blocks untouched.
+    """
+    path = project_root() / "bactolomew_config.json"
+    try:
+        current = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        if not isinstance(current, dict):
+            current = {}
+    except Exception:
+        current = {}
+    merged = _deep_merge(current, dict(updates))
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(merged, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)  # atomic on POSIX
+    return merged
+
+
+def configured_resources() -> dict[str, int]:
+    """Global compute limits from config `resources` block, with sane defaults.
+
+    max_threads defaults to all cores (no cap); max_ram_gb defaults to 0 (no limit).
+    """
+    config = _load_app_config()
+    raw = config.get("resources") if isinstance(config.get("resources"), Mapping) else {}
+    cpu = os.cpu_count() or 1
+
+    def _pos_int(value: Any, default: int) -> int:
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            return default
+        return n if n > 0 else default
+
+    return {
+        "max_threads": _pos_int(raw.get("max_threads"), cpu),
+        "max_ram_gb": _pos_int(raw.get("max_ram_gb"), 0),
+    }
+
+
+def effective_core_budget() -> int:
+    """The core budget a new run should plan against: min(physical cores, config cap)."""
+    cpu = os.cpu_count() or 1
+    return max(1, min(cpu, configured_resources()["max_threads"]))
+
+
+def configured_max_ram_gb() -> int:
+    """User-configured RAM cap in GB, or 0 when unset (no enforcement)."""
+    return configured_resources()["max_ram_gb"]
+
+
 def _normalize_shell_tokens(value: Any) -> list[str]:
     if isinstance(value, str):
         return [token for token in shlex.split(value) if token]
@@ -128,6 +191,7 @@ class ContainerContext:
     gid: int = 0
     home_dir: str = "/tmp"              # writable HOME inside the container
     default_workdir: str = "/tmp"
+    mem_limit_gb: int = 0              # per-container RAM cap in GB (0 = no limit)
 
 
 _CURRENT_CTX: "contextvars.ContextVar[Optional[ContainerContext]]" = contextvars.ContextVar(
@@ -246,6 +310,7 @@ def make_container_context(
         gid=os.getgid(),
         home_dir=home,
         default_workdir=wd,
+        mem_limit_gb=configured_max_ram_gb(),
     )
 
 
@@ -263,6 +328,8 @@ def _container_prefix(ctx: ContainerContext, env: str, exe: str, workdir: Option
             "--user", f"{ctx.uid}:{ctx.gid}",
             "-e", f"HOME={ctx.home_dir}",
         ]
+        if ctx.mem_limit_gb and ctx.mem_limit_gb > 0:
+            cmd += ["--memory", f"{ctx.mem_limit_gb}g"]
         for root in ctx.bind_roots:
             cmd += ["-v", f"{root}:{root}"]
         if wd:
@@ -299,6 +366,8 @@ def container_image_cmd(
     argv = [str(a) for a in argv]
     if runtime == "docker":
         cmd = ["docker", "run", "--rm", "--user", f"{ctx.uid}:{ctx.gid}"]
+        if ctx.mem_limit_gb and ctx.mem_limit_gb > 0:
+            cmd += ["--memory", f"{ctx.mem_limit_gb}g"]
         for k, v in env.items():
             cmd += ["-e", f"{k}={v}"]
         for root in binds:
@@ -625,6 +694,11 @@ def configured_assembly_qc_settings(raw_config: Mapping[str, Any] | None = None)
             if default_db.is_file():
                 settings["checkm2_database_path"] = str(default_db)
 
+    # Auto-enable CheckM2 low-memory mode when the configured RAM cap is tight.
+    max_ram_gb = configured_max_ram_gb()
+    if max_ram_gb and max_ram_gb < 32:
+        settings["checkm2_lowmem"] = True
+
     return settings
 
 
@@ -633,6 +707,10 @@ __all__ = [
     "TOOLS_IMAGE",
     "DEFAULT_RUNTIME",
     "ContainerContext",
+    "save_app_config",
+    "configured_resources",
+    "effective_core_budget",
+    "configured_max_ram_gb",
     "compute_bind_roots",
     "make_container_context",
     "set_container_context",

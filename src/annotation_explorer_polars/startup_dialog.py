@@ -546,6 +546,12 @@ class StartupDialog(QtWidgets.QDialog):
         layout.addLayout(list_row)
 
         btn_row = QtWidgets.QHBoxLayout()
+        settings_btn = QtWidgets.QPushButton("⚙")
+        settings_btn.setToolTip("Settings")
+        settings_btn.setStyleSheet(_SECONDARY_BTN)
+        settings_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        settings_btn.clicked.connect(self._open_settings_dialog)
+        btn_row.addWidget(settings_btn)
         new_run_btn = QtWidgets.QPushButton("Start New Run")
         new_run_btn.setStyleSheet(_SECONDARY_BTN)
         new_run_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
@@ -994,6 +1000,13 @@ class StartupDialog(QtWidgets.QDialog):
             self.run_config = run_cfg
         return errors
 
+    def _open_settings_dialog(self) -> None:
+        from .settings_dialog import SettingsDialog
+
+        # Settings are read from bactolomew_config.json on the next accessor call /
+        # next run, so there is nothing to refresh here after the dialog closes.
+        SettingsDialog(self).exec()
+
     def _open_new_run_dialog(self) -> None:
         config = _ensure_app_config(self, dev_mode=self._dev_mode)
         if config is None:
@@ -1041,6 +1054,7 @@ class StartupDialog(QtWidgets.QDialog):
             configured_chewbbaca_settings,
             configured_fastgear_settings,
             configured_mobsuite_settings,
+            effective_core_budget,
         )
 
         marker_entries = _load_catalog_entries(MARKER_DB_CATALOG_PATH)
@@ -1106,7 +1120,7 @@ class StartupDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.critical(self, "Missing chewBBACA config", str(exc))
             return
 
-        cpu = os.cpu_count() or 1
+        cpu = effective_core_budget()  # min(physical cores, configured max_threads)
 
         try:
             cfg = DataInput(
