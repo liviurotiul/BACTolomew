@@ -6,6 +6,12 @@ bacterial assemblies from QC through annotation, typing, pangenome and phylogene
 and lets you explore the results interactively: tables, trees, pangenome views, plasmid
 views and geographic maps.
 
+![BACTolomew explore window, cgMLST minimum spanning tree, pangenome clustering, geographic map and gene neighborhoods](docs/images/bactolomew_overview.png)
+
+A run of 153 *Acinetobacter baumannii* genomes: the explore window (phylogeny, gene
+presence/absence, map, plasmidome), the cgMLST minimum spanning tree, pangenome clustering,
+the geographic map and the *bla*<sub>OXA-23</sub> gene neighborhoods.
+
 ## Features
 
 - **Pipeline** (one command or one button): assembly QC, Bakta annotation, MLST,
