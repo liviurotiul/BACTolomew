@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import gzip
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from pipeline.ToolEnv import tool_cmd
+import numpy as np
 
+from pipeline.CoreTreeWorkflow import tree_stamp_path
+from pipeline.RunSteps import ProgressCallback, report_progress
+from pipeline.ToolEnv import tool_cmd
+from pipeline.TreesIndex import LEGACY_SNIPPY_TREE_REL, SNIPPY_RAW_REL, write_snippy_stamp
+
+# Panaroo output folders are recognized by their core alignment (see _find_panaroo_output_dir).
 _CORE_ALIGNMENT_CANDIDATES = (
     "core_gene_alignment.aln",
     "core_gene_alignment.fa",
@@ -18,22 +25,20 @@ _CORE_ALIGNMENT_CANDIDATES = (
     "core_gene_alignment.fa.gz",
     "core_gene_alignment.fasta.gz",
 )
-_TREE_ALIGNMENT_CANDIDATES = (
-    "core_gene_alignment_filtered.aln",
-    *_CORE_ALIGNMENT_CANDIDATES,
-)
 _SNIPPY_CORE_ALIGNMENT_CANDIDATES = (
     "core.full.aln",
     "core.aln",
 )
-_GUBBINS_FILTERED_ALIGNMENT = Path("gubbins") / "core_gene.filtered_polymorphic_sites.fasta"
 
 
 @dataclass(frozen=True)
 class PhylogenyResult:
     reference_genome: Path
-    core_tree: Path
     snippy_tree: Path
+    warnings: list[dict[str, str]] = field(default_factory=list)
+
+
+MIN_RAXML_SEQUENCES = 4
 
 
 def _cmd_available(tool: str, probe_args: list[str]) -> bool:
@@ -74,16 +79,44 @@ def _fasta_headers(path: Path) -> list[str]:
     return headers
 
 
-def _write_trivial_tree(headers: list[str], output_tree: Path) -> Path:
+def _write_trivial_tree(headers: list[str], output_tree: Path, lengths: list[float] | None = None) -> Path:
     output_tree.parent.mkdir(parents=True, exist_ok=True)
     if not headers:
         raise RuntimeError("Cannot write tree: no taxa available.")
     if len(headers) == 1:
         newick = f"{headers[0]};\n"
+    elif lengths is not None:
+        newick = "(" + ",".join(f"{h}:{max(0.0, x):.8g}" for h, x in zip(headers, lengths)) + ");\n"
     else:
-        newick = "(" + ",".join(headers) + ");\n"
+        newick = "(" + ",".join(f"{h}:0" for h in headers) + ");\n"
     output_tree.write_text(newick, encoding="utf-8")
     return output_tree
+
+
+def _three_taxon_lengths(msa_path: Path) -> list[float]:
+    """Branch lengths of the only unrooted 3-taxon tree from pairwise p-distances
+    (columns called in both sequences): a = (d_ab + d_ac - d_bc) / 2, and so on."""
+    seqs: list[np.ndarray] = []
+    current: list[str] = []
+    with _open_text_auto(msa_path) as handle:
+        for line in handle:
+            if line.startswith(">"):
+                if current:
+                    seqs.append(np.frombuffer("".join(current).upper().encode("ascii", "replace"), dtype=np.uint8))
+                current = []
+            else:
+                current.append(line.strip())
+    if current:
+        seqs.append(np.frombuffer("".join(current).upper().encode("ascii", "replace"), dtype=np.uint8))
+    called = [np.isin(seq, np.frombuffer(b"ACGT", dtype=np.uint8)) for seq in seqs]
+
+    def p(i: int, j: int) -> float:
+        both = called[i] & called[j]
+        n = int(both.sum())
+        return float((seqs[i][both] != seqs[j][both]).sum()) / n if n else 0.0
+
+    ab, ac, bc = p(0, 1), p(0, 2), p(1, 2)
+    return [(ab + ac - bc) / 2, (ab + bc - ac) / 2, (ac + bc - ab) / 2]
 
 
 def _find_alignment_file(root: Path, candidates: tuple[str, ...]) -> Path | None:
@@ -92,17 +125,6 @@ def _find_alignment_file(root: Path, candidates: tuple[str, ...]) -> Path | None
         if path.is_file():
             return path
     return None
-
-
-def _resolve_core_tree_alignment(output_path: Path, panaroo_out: Path, logger: logging.Logger) -> Path:
-    gubbins_alignment = output_path / _GUBBINS_FILTERED_ALIGNMENT
-    if gubbins_alignment.is_file() and gubbins_alignment.stat().st_size > 0:
-        logger.info("Using Gubbins filtered alignment for core RAxML tree: %s", gubbins_alignment)
-        return gubbins_alignment
-
-    panaroo_alignment = _resolve_core_tree_alignment(output_path, panaroo_out, logger)
-    logger.info("Using Panaroo core alignment for core RAxML tree: %s", panaroo_alignment)
-    return panaroo_alignment
 
 
 def _run_raxml_tree(
@@ -114,9 +136,12 @@ def _run_raxml_tree(
     prefix_name: str,
 ) -> Path:
     headers = _fasta_headers(msa_path)
-    if len(headers) <= 2:
-        logger.info("Writing trivial tree for %s (%d taxa).", msa_path.name, len(headers))
-        return _write_trivial_tree(headers, output_tree)
+    if len(headers) < MIN_RAXML_SEQUENCES:
+        # RAxML-NG refuses fewer than 4 sequences; up to 3 taxa there is one unrooted
+        # topology, so the tree is written directly (3 taxa: lengths from p-distances).
+        logger.info("Writing the only possible tree for %s (%d taxa, no RAxML-NG).", msa_path.name, len(headers))
+        lengths = _three_taxon_lengths(msa_path) if len(headers) == 3 else None
+        return _write_trivial_tree(headers, output_tree, lengths)
 
     output_tree.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output_tree.parent) as tmpdir:
@@ -381,12 +406,17 @@ def _run_snippy_per_sample(
     per_sample_dir: Path,
     logger: logging.Logger,
     threads: int,
+    progress: ProgressCallback = None,
 ) -> list[Path]:
     sample_dirs: list[Path] = []
     per_sample_dir.mkdir(parents=True, exist_ok=True)
-    for genome in sorted(genome_files, key=lambda p: (p.stem, str(p))):
-        if genome.resolve() == reference_genome.resolve():
-            continue
+    queries = [
+        genome
+        for genome in sorted(genome_files, key=lambda p: (p.stem, str(p)))
+        if genome.resolve() != reference_genome.resolve()
+    ]
+    for done, genome in enumerate(queries):
+        report_progress(progress, done, len(queries))
         sample_dir = per_sample_dir / genome.stem
         if sample_dir.exists():
             shutil.rmtree(sample_dir, ignore_errors=True)
@@ -418,6 +448,7 @@ def _run_snippy_per_sample(
         if not (sample_dir / "snps.vcf").is_file():
             raise RuntimeError(f"Snippy did not produce snps.vcf for {genome.name}")
         sample_dirs.append(sample_dir)
+    report_progress(progress, len(queries), len(queries))
     return sample_dirs
 
 
@@ -446,6 +477,15 @@ def _run_snippy_core(
     return alignment
 
 
+def raxml_ng_version() -> str | None:
+    try:
+        result = subprocess.run([*tool_cmd("raxml-ng"), "--version"], capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        return None
+    found = re.search(r"RAxML-NG v\.\s*(\S+)", (result.stdout or "") + (result.stderr or ""))
+    return found.group(1) if found else None
+
+
 def run_phylogeny(
     genome_files: list[Path],
     output_path: Path,
@@ -454,7 +494,15 @@ def run_phylogeny(
     snippy_threads: int = 1,
     raxml_threads: int = 1,
     reference_genome: Path | None = None,
+    progress: ProgressCallback = None,
 ) -> PhylogenyResult:
+    """Snippy against the reference, snippy-core, then RAxML-NG GTR+G on core.full.aln.
+
+    The raw (unrooted) tree goes to trees/raw/snippy_core.raxml.nwk with its stamp
+    trees/snippy_core.json; pipeline.TreesIndex roots it, renames its Reference tip and
+    lists it as the secondary, not recombination-corrected tree. The core genome tree is
+    the core_tree step (IQ-TREE on the Gubbins output), not this one.
+    """
     if not (_cmd_available("raxml-ng", ["--help"]) or _cmd_available("raxml-ng", ["--version"])):
         raise RuntimeError("raxml-ng not available (configured env or PATH).")
     if not (_cmd_available("snippy", ["--help"]) or _cmd_available("snippy", ["--version"])):
@@ -462,26 +510,10 @@ def run_phylogeny(
     if not (_cmd_available("snippy-core", ["--help"]) or _cmd_available("snippy-core", ["--version"])):
         raise RuntimeError("snippy-core not available (configured env or PATH).")
 
-    panaroo_out = ensure_panaroo_out(output_path, logger)
-    if panaroo_out is None:
-        raise RuntimeError("Panaroo output required before phylogeny can run.")
-    panaroo_alignment = _find_alignment_file(panaroo_out, _TREE_ALIGNMENT_CANDIDATES)
-    if panaroo_alignment is None:
-        raise RuntimeError("Panaroo core alignment not found for tree inference.")
-
     reference_genome = (reference_genome or _default_reference_genome(genome_files)).resolve()
-    trees_dir = output_path / "trees"
-    trees_dir.mkdir(parents=True, exist_ok=True)
-    core_tree = trees_dir / "core_gene_tree.nwk"
-    snippy_tree = trees_dir / "snippy_raxml.tree"
-
-    _run_raxml_tree(
-        panaroo_alignment,
-        core_tree,
-        logger=logger,
-        threads=raxml_threads,
-        prefix_name="core_gene_tree",
-    )
+    snippy_tree = output_path / SNIPPY_RAW_REL
+    snippy_tree.parent.mkdir(parents=True, exist_ok=True)
+    tree_stamp_path(output_path, "snippy_core").unlink(missing_ok=True)
 
     snippy_root = output_path / "snippy"
     with tempfile.TemporaryDirectory(dir=output_path) as tmpdir:
@@ -496,8 +528,10 @@ def run_phylogeny(
             per_sample_dir=tmp_per_sample,
             logger=logger,
             threads=snippy_threads,
+            progress=progress,
         )
 
+        taxa = 1
         if not sample_dirs:
             _write_trivial_tree([reference_genome.stem], snippy_tree)
             tmp_core.mkdir(parents=True, exist_ok=True)
@@ -508,6 +542,7 @@ def run_phylogeny(
                 core_dir=tmp_core,
                 logger=logger,
             )
+            taxa = len(_fasta_headers(core_alignment))
             _run_raxml_tree(
                 core_alignment,
                 snippy_tree,
@@ -524,10 +559,23 @@ def run_phylogeny(
             shutil.rmtree(snippy_root, ignore_errors=True)
         shutil.move(str(tmp_snippy), str(snippy_root))
 
+    (output_path / LEGACY_SNIPPY_TREE_REL).unlink(missing_ok=True)
+    warnings: list[dict[str, str]] = []
+    if taxa < MIN_RAXML_SEQUENCES:
+        note = (
+            f"The Snippy alignment has {taxa} sequence(s); RAxML-NG needs at least "
+            f"{MIN_RAXML_SEQUENCES}, so the only possible tree was written"
+            + (" with branch lengths from pairwise p-distances." if taxa == 3 else ".")
+        )
+        logger.warning(note)
+        warnings.append({"step": "phylogeny", "code": "snippy_tree_few_genomes", "message": note})
+        write_snippy_stamp(output_path, tool_version=None, threads=None, small_tree_note=note)
+    else:
+        write_snippy_stamp(output_path, tool_version=raxml_ng_version(), threads=raxml_threads)
     return PhylogenyResult(
         reference_genome=reference_genome,
-        core_tree=core_tree,
         snippy_tree=snippy_tree,
+        warnings=warnings,
     )
 
 

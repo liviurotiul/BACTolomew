@@ -11,6 +11,7 @@ from pathlib import Path
 import pandas as pd
 
 from pipeline.FastaUtils import prepare_query_fasta, subseq
+from pipeline.RunSteps import ProgressCallback, report_progress
 from pipeline.ToolEnv import tool_cmd
 
 
@@ -20,9 +21,10 @@ def run_bakta_on_fastas(
     logger: logging.Logger,
     bakta_db: str = "",
     bakta_threads: int = 1,
+    progress: ProgressCallback = None,
 ):
     """
-    Run Bakta on sanitized copies of the input FASTAs.
+    Run Bakta on sanitized copies of the input FASTAs; progress(done, total) after each genome.
     """
     bakta_final_dir = output_path / "bakta"
     bakta_final_dir.mkdir(parents=True, exist_ok=True)
@@ -33,7 +35,9 @@ def run_bakta_on_fastas(
     completed: list[str] = []
     failures: list[str] = []
 
-    for fasta in fasta_paths:
+    fasta_paths = list(fasta_paths)
+    for done, fasta in enumerate(fasta_paths):
+        report_progress(progress, done, len(fasta_paths))
         if not fasta.exists() or not fasta.is_file():
             msg = f"non-existent input FASTA: {fasta}"
             logger.warning("Skipping %s", msg)
@@ -44,7 +48,7 @@ def run_bakta_on_fastas(
             query_fa = prepare_query_fasta(fasta, tmp_root, logger, write_map=False)
         except Exception as e:
             failures.append(f"{fasta.name}: failed to prepare FASTA ({e})")
-            logger.error(f"Failed to prepare FASTA for Bakta: {fasta} — {e}")
+            logger.error(f"Failed to prepare FASTA for Bakta: {fasta} - {e}")
             continue
 
         prefix = query_fa.stem
@@ -110,6 +114,7 @@ def run_bakta_on_fastas(
             logger.error(f"Failed to copy Bakta results for {fasta.name}: {e}")
         finally:
             shutil.rmtree(tmp_output, ignore_errors=True)
+    report_progress(progress, len(fasta_paths), len(fasta_paths))
 
     if failures:
         preview = "; ".join(failures[:5])
@@ -190,7 +195,7 @@ def parse_multiple_bakta_json(json_paths: list[Path], logger: logging.Logger) ->
             print(f"[file] read {p} in {time.perf_counter() - t0:.2f}s")
             if df is not None and len(df):
                 frames.append(df)
-        except Exception as e:
+        except Exception:
             logger.exception("Failed parsing %s", p)
     if not frames:
         cols = ["Sample", "Contig", "Id", "Gene", "Start", "Stop", "Strand", "Product",

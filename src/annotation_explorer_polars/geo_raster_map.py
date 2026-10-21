@@ -1,9 +1,11 @@
 """Dependency-free, OpenGL-free world map for the sample geographic view.
 
-A QGraphicsView (raster viewport — never QOpenGLWidget, so it cannot hit the GL
+A QGraphicsView (raster viewport - never QOpenGLWidget, so it cannot hit the GL
 crash) that draws countries as a choropleth by sample count plus per-sample
 points, with a fixed title and colour-scale legend. Same public API as the other
-map views: update_data(points, countries, max_count) + highlight_sample(s).
+map views: update_data(points, countries, max_count) + highlight_sample(s), and
+countryHovered(key) with the normalized name of the country with samples under
+the pointer ("" for none).
 """
 from __future__ import annotations
 
@@ -15,13 +17,15 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from .theme import COLORS
+
 # ---- theme ----
 NO_DATA_FILL = "#eef1f5"
 BORDER = "#c2ccd6"
 OCEAN = "#f4f8fc"
 POINT_FILL = "#b11242"
 POINT_EDGE = "#ffffff"
-HILITE_FILL = "#f59e0b"
+HILITE_FILL = COLORS["hover"]
 INK = "#1f2d3d"
 _RAMP_LO = (222, 235, 247)
 _RAMP_HI = (8, 69, 148)
@@ -60,6 +64,47 @@ def _count_color(count: int, max_count: int) -> QtGui.QColor:
     b = round(_RAMP_LO[2] + (_RAMP_HI[2] - _RAMP_LO[2]) * t)
     return QtGui.QColor(r, g, b)
 
+
+# A country (or island) drawn smaller than SMALL_RING_PX on screen is hovered
+# from up to HOVER_SLOP_PX away (Singapore, Fiji at world zoom are a pixel or
+# two); larger countries hover only under the pointer, so a border is exact.
+HOVER_SLOP_PX = 4.0
+SMALL_RING_PX = 8.0
+
+
+def ring_bounds(entries: Sequence[Tuple[str, QtGui.QPainterPath]]) -> List[Tuple[str, QtCore.QRectF]]:
+    """(country, bounds) of every ring of these outlines."""
+    out: List[Tuple[str, QtCore.QRectF]] = []
+    for name, path in entries:
+        for polygon in path.toSubpathPolygons():
+            out.append((name, polygon.boundingRect()))
+    return out
+
+
+def small_country_near(
+    rings: Sequence[Tuple[str, QtCore.QRectF]], scene_pos: QtCore.QPointF, scale: float
+) -> str:
+    """The country with a ring drawn under SMALL_RING_PX at ``scale`` (view
+    pixels per scene unit) within HOVER_SLOP_PX of the point, the nearest
+    one; "" for none."""
+    if scale <= 0.0:
+        return ""
+    slop = HOVER_SLOP_PX / scale
+    small = SMALL_RING_PX / scale
+    x, y = float(scene_pos.x()), float(scene_pos.y())
+    best = ""
+    best_d = math.inf
+    for name, r in rings:
+        if r.width() > small or r.height() > small:
+            continue
+        dx = max(r.left() - x, 0.0, x - r.right())
+        dy = max(r.top() - y, 0.0, y - r.bottom())
+        if dx > slop or dy > slop:
+            continue
+        d = math.hypot(dx, dy)
+        if d < best_d:
+            best, best_d = name, d
+    return best
 
 _WORLD_CACHE: Optional[List[Tuple[str, QtGui.QPainterPath]]] = None
 
@@ -106,12 +151,17 @@ def _load_world() -> List[Tuple[str, QtGui.QPainterPath]]:
 
 
 class RasterGeoMapView(QtWidgets.QGraphicsView):
+    # The country under the pointer (normalized like the counts), "" when the
+    # pointer is over no country with samples or leaves the map. Emitted only
+    # when it changes.
+    countryHovered = QtCore.pyqtSignal(str)
+
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
         self._scene = QtWidgets.QGraphicsScene(self)
         self._scene.setSceneRect(0, 0, _W, _H)
         self.setScene(self._scene)
-        # raster viewport only (QGraphicsView default) — never QOpenGLWidget.
+        # raster viewport only (QGraphicsView default) - never QOpenGLWidget.
         self.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
         self.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
         self.setDragMode(QtWidgets.QGraphicsView.DragMode.ScrollHandDrag)
@@ -138,6 +188,13 @@ class RasterGeoMapView(QtWidgets.QGraphicsView):
         self._highlight: set[str] = set()
         self._point_items: List[Tuple[str, QtWidgets.QGraphicsEllipseItem]] = []
         self._did_fit = False
+        self._hover_key = ""
+        self.viewport().setMouseTracking(True)  # pointer moves without a button report the hovered country
+        # (country, outline, bounds) of the countries with samples (_draw_world).
+        self._hit_paths: List[Tuple[str, QtGui.QPainterPath, QtCore.QRectF]] = []
+        # Ring bounds of the countries with samples (hover slop), built on
+        # the first pointer move after a rebuild.
+        self._hit_rings: Optional[List[Tuple[str, QtCore.QRectF]]] = None
 
         self._border_pen = QtGui.QPen(QtGui.QColor(BORDER))
         self._border_pen.setWidthF(0.6)
@@ -165,14 +222,22 @@ class RasterGeoMapView(QtWidgets.QGraphicsView):
     def _draw_world(self, empty: bool) -> None:
         self._scene.clear()
         self._point_items = []
+        self._hit_paths = []
+        self._hit_rings = None
         counts_norm: Dict[str, int] = {}
         for name, count in self._countries.items():
             counts_norm[_norm(name)] = counts_norm.get(_norm(name), 0) + int(count)
+        # A country with sample points is hoverable too (its points, not its fill, show them).
+        hoverable = set() if empty else {key for key, count in counts_norm.items() if count > 0}
+        if not empty:
+            hoverable.update(_norm(pt.get("country", "")) for pt in self._points)
 
         for norm_name, qpath in _load_world():
             count = 0 if empty else counts_norm.get(norm_name, 0)
             item = self._scene.addPath(qpath, self._border_pen, QtGui.QBrush(_count_color(count, self._max_count)))
             item.setZValue(0)
+            if norm_name in hoverable:
+                self._hit_paths.append((norm_name, qpath, qpath.boundingRect()))
 
         if not empty:
             for pt in self._points:
@@ -191,6 +256,44 @@ class RasterGeoMapView(QtWidgets.QGraphicsView):
 
         self._did_fit = False
         self._fit()
+
+    # ---- pointer hover ----
+    def country_at(self, scene_pos: QtCore.QPointF) -> str:
+        """The country with samples at this scene point, "" for none."""
+        for name, path, bounds in self._hit_paths:
+            if bounds.contains(scene_pos) and path.contains(scene_pos):
+                return name
+        return ""
+
+    def country_near(self, scene_pos: QtCore.QPointF) -> str:
+        """The country under the point, else a small one a few pixels away
+        (small_country_near)."""
+        name = self.country_at(scene_pos)
+        if name:
+            return name
+        if self._hit_rings is None:
+            self._hit_rings = ring_bounds([(n, path) for n, path, _bounds in self._hit_paths])
+        return small_country_near(self._hit_rings, scene_pos, abs(float(self.transform().m11())))
+
+    def reset_hover(self) -> None:
+        """Forget the hovered country without emitting (the panel already
+        cleared its hover), so the next pointer move over it reports it again."""
+        self._hover_key = ""
+
+    def _set_hover_key(self, key: str) -> None:
+        if key != self._hover_key:
+            self._hover_key = key
+            self.countryHovered.emit(key)
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        super().mouseMoveEvent(event)
+        if event.buttons() == QtCore.Qt.MouseButton.NoButton:  # not while dragging the map
+            self._set_hover_key(self.country_near(self.mapToScene(event.position().toPoint())))
+
+    def viewportEvent(self, event: QtCore.QEvent) -> bool:
+        if event.type() == QtCore.QEvent.Type.Leave:  # the pointer left the map
+            self._set_hover_key("")
+        return super().viewportEvent(event)
 
     @staticmethod
     def _point_pen() -> QtGui.QPen:

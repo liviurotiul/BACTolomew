@@ -52,6 +52,8 @@ EXPECTED_ANNOTATION_COLUMNS: List[str] = [
     "ResistanceDrugClasses",
     "ResistanceAntibiotics",
     "ResistanceMechanisms",
+    "ResistanceMutations",
+    "ResistanceMutationClasses",
     "MobSuitePrediction",
     "MobSuiteIsPlasmid",
     "MobSuiteSourceContig",

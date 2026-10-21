@@ -1,0 +1,9 @@
+# Build context for docker/Dockerfile (built from the repo root): only the files the
+# Dockerfile copies. Everything else (runs/, DB/, envs/, cache/, .venv/, ...) stays out.
+*
+!yamls/*.yaml
+!docker/locks/*.lock
+!docker/locks/tool_versions.json
+!docker/install_envs.sh
+!docker/locks/mobsuite_db.sha256
+!docker/verify_image.sh

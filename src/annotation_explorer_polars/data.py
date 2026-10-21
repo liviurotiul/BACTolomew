@@ -21,10 +21,19 @@ from .constants import (
 from .run_expectations import load_run_report, load_run_status, run_allows_view
 from .progress import log_done, log_step
 from .polars_io import read_csv_df
-from pipeline.RunValidation import RESULT_REQUIRED_STEPS, validate_completed_run
+from pipeline.RunValidation import RESULT_REQUIRED_STEPS, skippable_steps, validate_completed_run
+from pipeline.AmrFinderWorkflow import attach_resistance_mutations
 from pipeline.AnnotationUtils import (
     assign_annotation_ids,
     infer_annotation_category_and_source,
+)
+from pipeline.BaktaEvidence import (
+    SOURCE_AMRFINDER,
+    contig_key,
+    evidence_marker_hits,
+    read_evidence,
+    unplaced_evidence,
+    unplaced_locus,
 )
 from pipeline.BaktaWorkflow import parse_multiple_bakta_json
 from pipeline.AssemblyQualityWorkflow import ASSEMBLY_QC_COLUMNS, load_assembly_quality_summary
@@ -40,12 +49,16 @@ from pipeline.DiamondWorkflow import (
     read_annotations,
 )
 from pipeline.MobSuiteWorkflow import load_mobsuite_contig_predictions
+from pipeline.RunMetadata import RUN_METADATA_LABEL_COLUMNS, build_run_metadata
 from pipeline.ResistanceMetadata import (
     RESISTANCE_MARKER_COLUMNS,
     SUBJECT_METADATA_COLUMNS,
     build_annotation_resistance_maps,
+    drop_resistance_target_hits,
     enrich_marker_hits_with_resistance,
 )
+from pipeline.FastaUtils import subseq
+from pipeline.UserDatabases import run_user_databases
 from pipeline.Utils import CATEGORIES, assign_gene_ids
 
 # Metadata preparation guidelines:
@@ -215,6 +228,16 @@ def _finalize_marker_hits_df(df: pd.DataFrame) -> pd.DataFrame:
     return out[cols]
 
 
+# The annotation tags of marker categories ("core-AMR", "plus-VIRULENCE", ...).
+_CATEGORY_TAGS = (("AMR", "A"), ("BMRG", "B"), ("VIRULENCE", "V"), ("MOBILE", "M"), ("PHAGE", "P"))
+
+
+def category_tags(categories: str) -> str:
+    """The tag letters (A, B, V, M, P) of a text naming marker categories."""
+    text = str(categories or "").upper()
+    return "".join(tag for name, tag in _CATEGORY_TAGS if name in text)
+
+
 def _finalize_annotations_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     if "Sample" in df.columns:
@@ -252,21 +275,13 @@ def _finalize_annotations_df(df: pd.DataFrame) -> pd.DataFrame:
         + df["MarkerCategory"].fillna("").astype(str)
     ).str.upper()
 
-    def _tags_from_cats(s: str) -> str:
-        tags: List[str] = []
-        if "AMR" in s:
-            tags.append("A")
-        if "BMRG" in s:
-            tags.append("B")
-        if "VIRULENCE" in s:
-            tags.append("V")
-        if "MOBILE" in s:
-            tags.append("M")
-        if "PHAGE" in s:
-            tags.append("P")
-        return "".join(tags)
-
-    df["Tags"] = cat_series.apply(_tags_from_cats)
+    df["Tags"] = cat_series.apply(category_tags)
+    # X: a known resistance mutation (AMRFinderPlus POINT) in this CDS.
+    if "ResistanceMutations" in df.columns:
+        for col in ("ResistanceMutations", "ResistanceMutationClasses"):
+            df[col] = df[col].fillna("").astype(str) if col in df.columns else ""
+        mutated = df["ResistanceMutations"].str.strip() != ""
+        df.loc[mutated, "Tags"] = df.loc[mutated, "Tags"] + "X"
 
     needed_cols = [
         *EXPECTED_ANNOTATION_COLUMNS,
@@ -357,6 +372,23 @@ def prepare_metadata(
     df, inferred_types = _infer_metadata_types(df, overrides=_metadata_type_overrides_for_path(path))
     df.attrs["inferred_types"] = inferred_types
     return df, warnings, inferred_types
+
+
+def prepare_run_metadata(
+    output_dir: Path,
+    annotation_samples: Sequence[str],
+    reference_samples: Sequence[str],
+) -> Tuple[pd.DataFrame, List[str], Dict[str, str]]:
+    """``prepare_metadata`` for a run opened without a metadata CSV: the run's
+    own sample table (species, MLST, fastGEAR, assembly QC) for every genome
+    in the data, typed like a CSV."""
+    samples = sorted(set(_normalize_samples(annotation_samples)) | set(_normalize_samples(reference_samples)))
+    df = build_run_metadata(Path(output_dir), samples)
+    df = df.replace("", pd.NA)
+    overrides = {col: "string" for col in RUN_METADATA_LABEL_COLUMNS if col in df.columns}
+    df, inferred_types = _infer_metadata_types(df, overrides=overrides)
+    df.attrs["inferred_types"] = inferred_types
+    return df, [], inferred_types
 
 
 def attach_assembly_quality_metadata(meta_df: pd.DataFrame, output_dir: Optional[Path]) -> pd.DataFrame:
@@ -693,17 +725,21 @@ def validate_output_dir(
         return run_cfg, errors
     marker_inputs = inputs.get("marker_sequences")
     locus_inputs = inputs.get("reference_locus_sequences")
-    if not isinstance(marker_inputs, list) or not marker_inputs:
+    # An empty list is a run without any installed marker (or compound) database.
+    if not isinstance(marker_inputs, list):
         errors.append("run_config.json is missing inputs.marker_sequences.")
-    if not isinstance(locus_inputs, list) or not locus_inputs:
+    if not isinstance(locus_inputs, list):
         errors.append("run_config.json is missing inputs.reference_locus_sequences.")
     report_steps = run_report.get("steps")
     if not isinstance(report_steps, dict):
         errors.append(f"{RUN_REPORT_FILENAME} is missing the 'steps' object.")
         return run_cfg, errors
+    skippable = skippable_steps(run_cfg)
     for step_name in RESULT_REQUIRED_STEPS:
         step_info = report_steps.get(step_name)
         step_status = str(step_info.get("status") or "").strip().lower() if isinstance(step_info, dict) else ""
+        if step_status == "skipped" and step_name in skippable:
+            continue
         if step_status != "success":
             errors.append(f"Required step is not successful: {step_name} ({step_status or 'missing'}).")
 
@@ -739,7 +775,7 @@ def _get_inputs_list(run_cfg: Dict[str, Any], key: str) -> List[str]:
     if not isinstance(inputs, dict):
         raise ValueError("run_config.json is missing the 'inputs' object.")
     vals = inputs.get(key)
-    if not isinstance(vals, list) or not vals:
+    if not isinstance(vals, list):
         raise ValueError(f"run_config.json is missing inputs.{key}.")
     return [str(v) for v in vals]
 
@@ -749,6 +785,18 @@ def _db_name_from_tsv(path: Path) -> str:
     if "-vs-" not in stem:
         raise ValueError(f"Unexpected DIAMOND TSV name: {path.name}")
     return stem.split("-vs-", 1)[1]
+
+
+def _run_hit_tables(
+    tsv_files: List[Path], run_dbs: set, *, logger: logging.Logger, label: str
+) -> List[Path]:
+    """The hit tables of the databases the run searched; a table left by a database
+    removed since (a folder resumed with fewer databases) is not read."""
+    kept = [p for p in tsv_files if _db_name_from_tsv(p) in run_dbs]
+    stale = sorted({_db_name_from_tsv(p) for p in tsv_files} - run_dbs)
+    if stale:
+        logger.warning("Ignoring %s hit tables of databases not in this run: %s", label, ", ".join(stale))
+    return kept
 
 
 def _ensure_annotation_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -831,13 +879,24 @@ def _build_db_entry_map(
     *,
     logger: logging.Logger,
     label: str,
+    recorded_categories: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Dict[str, Any]]:
-    index = load_db_catalog_index(catalog_path, logger=logger)
+    """The catalog entry of each database the run searched; a database the catalog no
+    longer lists (or no catalog) keeps the category the run recorded for it."""
+    recorded = recorded_categories if isinstance(recorded_categories, dict) else {}
+    index = None
+    if db_paths:
+        try:
+            index = load_db_catalog_index(catalog_path, logger=logger)
+        except FileNotFoundError:
+            index = None
     out: Dict[str, Dict[str, Any]] = {}
     missing: List[str] = []
     for p_str in db_paths:
         p = Path(p_str).expanduser()
-        entry = index.entry_for_path(p)
+        entry = index.entry_for_path(p) if index is not None else None
+        if entry is None and p.stem in recorded:
+            entry = {"category": recorded[p.stem], "db_path": str(p)}
         if entry is None:
             missing.append(str(p))
             continue
@@ -858,12 +917,14 @@ def _build_db_category_map(
     *,
     logger: logging.Logger,
     label: str,
+    recorded_categories: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     entry_map = _build_db_entry_map(
         db_paths,
         catalog_path,
         logger=logger,
         label=label,
+        recorded_categories=recorded_categories,
     )
     return {stem: str(entry.get("category") or "").strip() for stem, entry in entry_map.items()}
 
@@ -892,6 +953,65 @@ def _build_db_resistance_metadata_map(
     return out
 
 
+# AnnotationIDs of the genes that are an AMRFinderPlus call on no Bakta CDS (after every
+# Bakta row's BKT id, so those stay the ones the marker search used).
+UNPLACED_ID_PREFIX = "AFP"
+_UNPLACED_KEY_COLUMN = "__evidence_key"
+
+
+def _with_unplaced_genes(bakta_df: pd.DataFrame, evidence: Optional[pd.DataFrame], output_dir: Path) -> pd.DataFrame:
+    """The Bakta rows plus one row per AMRFinderPlus gene call that lies on no Bakta CDS
+    (its contig coordinates, Method "AMRFinderPlus"), so it is found, tagged and drawn
+    like any gene; the run's evidence keeps those calls with an empty locus tag."""
+    calls = unplaced_evidence(evidence)
+    if calls.empty or bakta_df.empty:
+        return bakta_df
+    rows: List[Dict[str, Any]] = []
+    for call in calls.to_dict("records"):
+        sample = str(call["sample"])
+        contig = contig_key(call["contig"])
+        try:
+            start, stop = int(call["start"]), int(call["stop"])
+        except (TypeError, ValueError):
+            continue
+        fasta = output_dir / "bakta" / sample / f"{sample}.fna"
+        rows.append({
+            "Sample": sample,
+            "Contig": int(contig) if contig.isdigit() else pd.NA,
+            "Start": start,
+            "Stop": stop,
+            "Strand": call.get("strand") or pd.NA,
+            "Gene": call.get("gene") or pd.NA,
+            "Product": call.get("product") or pd.NA,
+            "Hypothetical": False,
+            "Method": SOURCE_AMRFINDER,
+            "Nucleotide_Sequence": subseq(fasta, str(call["contig"]), start, stop, call.get("strand") or "+")
+            if fasta.is_file() else pd.NA,
+            _UNPLACED_KEY_COLUMN: unplaced_locus(call),
+        })
+    if not rows:
+        return bakta_df
+    extra = pd.DataFrame(rows)
+    extra["AnnotationID"] = [f"{UNPLACED_ID_PREFIX}{i:07d}" for i in range(1, len(extra) + 1)]
+    return pd.concat([bakta_df, extra], ignore_index=True)
+
+
+def _evidence_marker_hits(evidence: Optional[pd.DataFrame], bakta_df: pd.DataFrame) -> pd.DataFrame:
+    """The run's gene evidence (evidence/*.tsv) as marker hits of the Bakta rows (and of
+    the rows `_with_unplaced_genes` added); empty for a run made before the bakta_evidence
+    step."""
+    if evidence is None or bakta_df.empty:
+        return pd.DataFrame()
+    t_ev = log_step("Reading the gene evidence")
+    locus = bakta_df["Locus"].astype(str)
+    if _UNPLACED_KEY_COLUMN in bakta_df.columns:
+        locus = bakta_df[_UNPLACED_KEY_COLUMN].fillna(locus).astype(str)
+    keys = zip(bakta_df["Sample"].astype(str), locus)
+    hits = evidence_marker_hits(evidence, dict(zip(keys, bakta_df["AnnotationID"])))
+    log_done("Reading the gene evidence", t_ev, extra=f"{len(hits)} rows")
+    return hits
+
+
 def build_annotations_from_output(output_dir: Path, run_cfg: Dict[str, Any]) -> Tuple[pd.DataFrame, pd.DataFrame]:
     logger = logging.getLogger("annotation_explorer")
     output_dir = Path(output_dir)
@@ -909,39 +1029,38 @@ def build_annotations_from_output(output_dir: Path, run_cfg: Dict[str, Any]) -> 
         MARKER_DB_CATALOG_PATH,
         logger=logger,
         label="marker",
+        recorded_categories=run_cfg["inputs"].get("marker_categories"),
     )
-    marker_cats = _build_db_category_map(
-        marker_paths,
-        MARKER_DB_CATALOG_PATH,
-        logger=logger,
-        label="marker",
-    )
+    marker_cats = {stem: str(entry.get("category") or "").strip() for stem, entry in marker_entry_map.items()}
     marker_resistance_metadata = _build_db_resistance_metadata_map(run_cfg, marker_entry_map)
 
     tsv_dir = output_dir / "annotations" / "bakta_vs_queries"
-    tsv_files = sorted(tsv_dir.rglob("*.tsv"))
-    if not tsv_files:
+    all_tsv_files = sorted(tsv_dir.rglob("*.tsv"))
+    tsv_files = _run_hit_tables(all_tsv_files, set(marker_cats), logger=logger, label="marker")
+    if not tsv_files and marker_paths:
         raise FileNotFoundError("No DIAMOND TSVs found under output/annotations/bakta_vs_queries.")
-    dbs_in_tsvs = {_db_name_from_tsv(p) for p in tsv_files}
-    missing_db = sorted(dbs_in_tsvs - set(marker_cats.keys()))
-    if missing_db:
-        raise ValueError(
-            "DIAMOND marker DBs not found in run_config marker_sequences: "
-            + ", ".join(missing_db)
-        )
 
     t_bakta = log_step(f"Parsing Bakta JSONs ({len(bakta_json_files)})")
     bakta_df = parse_multiple_bakta_json(bakta_json_files, logger)
     log_done("Parsing Bakta JSONs", t_bakta, extra=f"{len(bakta_df)} rows")
     bakta_df = _ensure_annotation_columns(bakta_df)
 
+    evidence = read_evidence(output_dir)
     if not bakta_df.empty:
         bakta_df["Method"] = "bakta"
         bakta_df = assign_annotation_ids(bakta_df, prefix="BKT")
+        bakta_df = _with_unplaced_genes(bakta_df, evidence, output_dir)
         bakta_df = _ensure_annotation_columns(bakta_df)
 
+    # A user database's hits keep its whole name as their Method.
+    user_dbs = run_user_databases(run_cfg.get("inputs"))
     t_diamond = log_step(f"Reading marker DIAMOND TSVs ({len(tsv_files)})")
-    diamond_annotations = read_annotations(tsv_dir)
+    if len(tsv_files) == len(all_tsv_files):
+        diamond_annotations = read_annotations(tsv_dir, user_dbs)
+    elif tsv_files:
+        diamond_annotations = pd.concat([read_annotations(p, user_dbs) for p in tsv_files], ignore_index=True)
+    else:  # only tables of databases no longer in the run are left
+        diamond_annotations = pd.DataFrame()
     log_done("Reading marker DIAMOND TSVs", t_diamond, extra=f"{len(diamond_annotations)} hits")
     if not diamond_annotations.empty:
         diamond_annotations["MarkerCategory"] = diamond_annotations["DB"].map(marker_cats)
@@ -956,6 +1075,11 @@ def build_annotations_from_output(output_dir: Path, run_cfg: Dict[str, Any]) -> 
             diamond_annotations["MarkerCategory"].isin(CATEGORIES)
         )
         diamond_annotations["Category"] = diamond_annotations["MarkerCategory"]
+        diamond_annotations = drop_resistance_target_hits(
+            diamond_annotations,
+            marker_resistance_metadata,
+            logger=logger,
+        )
         t_collapse = log_step("Collapsing marker DIAMOND hits")
         diamond_annotations = collapse_diamond_annotations(diamond_annotations)
         log_done("Collapsing marker DIAMOND hits", t_collapse, extra=f"{len(diamond_annotations)} rows")
@@ -967,6 +1091,16 @@ def build_annotations_from_output(output_dir: Path, run_cfg: Dict[str, Any]) -> 
         )
         log_done("Attaching resistance metadata to marker hits", t_res, extra=f"{len(diamond_annotations)} rows")
 
+    # A run with the bakta_evidence step: its rows join the marker hits (DB = their source).
+    evidence_hits = _evidence_marker_hits(evidence, bakta_df)
+    bakta_df = bakta_df.drop(columns=[_UNPLACED_KEY_COLUMN], errors="ignore")
+    if not evidence_hits.empty:
+        diamond_annotations = (
+            pd.concat([diamond_annotations, evidence_hits], ignore_index=True)
+            if not diamond_annotations.empty
+            else evidence_hits
+        )
+    if not diamond_annotations.empty:
         marker_cols = [c for c in diamond_annotations.columns if c != "AnnotationID"]
         t_map = log_step("Building marker map (linear scan)")
         marker_map = _build_marker_map(diamond_annotations, marker_cols)
@@ -1029,6 +1163,11 @@ def build_annotations_from_output(output_dir: Path, run_cfg: Dict[str, Any]) -> 
         plasmid_rows = int((bakta_df["MobSuiteIsPlasmid"].astype(str).str.lower() == "true").sum())
         log_done("Attaching MOB-suite plasmid contig predictions", t_mobsuite, extra=f"{plasmid_rows} annotation rows")
 
+        t_mut = log_step("Attaching AMRFinderPlus point mutations")
+        bakta_df = attach_resistance_mutations(bakta_df, output_dir)
+        mutated = int((bakta_df["ResistanceMutations"] != "").sum())
+        log_done("Attaching AMRFinderPlus point mutations", t_mut, extra=f"{mutated} CDS")
+
     t_final = log_step("Finalizing annotation table")
     bakta_df = _ensure_annotation_columns(bakta_df)
     bakta_df = _finalize_annotations_df(bakta_df)
@@ -1042,27 +1181,21 @@ def build_reference_locus_from_output(output_dir: Path, run_cfg: Dict[str, Any])
 
     tsv_dir = output_dir / "annotations" / "reference_loci"
     tsv_files = sorted(tsv_dir.rglob("*.tsv"))
-    if not tsv_files:
+    locus_paths = _get_inputs_list(run_cfg, "reference_locus_sequences")
+    if not tsv_files and locus_paths:
         raise FileNotFoundError("No DIAMOND TSVs found under output/annotations/reference_loci.")
 
-    locus_paths = _get_inputs_list(run_cfg, "reference_locus_sequences")
     locus_cats = _build_db_category_map(
         locus_paths,
         COMPOUND_DB_CATALOG_PATH,
         logger=logger,
         label="reference locus",
+        recorded_categories=run_cfg["inputs"].get("reference_locus_categories"),
     )
-
-    dbs_in_tsvs = {_db_name_from_tsv(p) for p in tsv_files}
-    missing_db = sorted(dbs_in_tsvs - set(locus_cats.keys()))
-    if missing_db:
-        raise ValueError(
-            "DIAMOND reference locus DBs not found in run_config reference_locus_sequences: "
-            + ", ".join(missing_db)
-        )
+    tsv_files = _run_hit_tables(tsv_files, set(locus_cats), logger=logger, label="reference locus")
 
     t_locus = log_step(f"Reading reference locus DIAMOND TSVs ({len(tsv_files)})")
-    ref_df = load_diamond_tsvs(tsv_files, locus_cats, logger)
+    ref_df = load_diamond_tsvs(tsv_files, locus_cats, logger, run_user_databases(run_cfg.get("inputs")))
     log_done("Reading reference locus DIAMOND TSVs", t_locus, extra=f"{len(ref_df)} hits")
     return ref_df
 

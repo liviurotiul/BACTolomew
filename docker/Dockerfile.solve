@@ -1,0 +1,25 @@
+# Solve conda envs from their yamls (yamls/<env>.yaml), for exporting new locks after a
+# tool version change. Not the published image: it has only the chosen envs, no fastGEAR,
+# no trimming. See docker/PUBLISHING.md, "Changing a tool version later".
+#
+# From the repo root:
+#   docker build --platform linux/amd64 -f docker/Dockerfile.solve \
+#       --build-arg ENVS="bakta mlst" -t bactolomew-solve:tmp .
+#   bash docker/update_locks.sh bactolomew-solve:tmp
+#
+# update_locks.sh exports a lock for every env in the image, so only the solved envs (and
+# base) are rewritten; the other locks stay as they are.
+
+# Same base as docker/Dockerfile, so base.lock and the solver match the real build.
+FROM condaforge/miniforge3:26.3.2-3@sha256:532f6ee7a858b009dc895f8313eb6ed875f05a455ec57d832aa6b4c66e2799b9
+SHELL ["/bin/bash", "-lc"]
+
+ARG ENVS
+COPY yamls/ /opt/bactolomew/yamls/
+RUN [ -n "$ENVS" ] || { echo "pass --build-arg ENVS=\"<env> ...\"" >&2; exit 2; }; \
+    for env in $ENVS; do \
+        yaml=/opt/bactolomew/yamls/$env.yaml; \
+        [ -f "$yaml" ] || { echo "missing yaml: $yaml" >&2; exit 1; }; \
+        mamba env create --yes --quiet -n "$env" -f "$yaml"; \
+    done; \
+    conda clean --all --yes

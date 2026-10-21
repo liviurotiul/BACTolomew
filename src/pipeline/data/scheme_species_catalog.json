@@ -1,0 +1,344 @@
+{
+  "version": 1,
+  "schemes": [
+    {
+      "schema_id": "acinetobacter_baumannii",
+      "schema_dir": "acinetobacter_baumannii",
+      "species": [
+        "Acinetobacter baumannii"
+      ],
+      "mlst_schemes": [
+        "abaumannii",
+        "abaumannii_2"
+      ]
+    },
+    {
+      "schema_id": "bacillus_anthracis",
+      "schema_dir": "bacillus_anthracis",
+      "species": [
+        "Bacillus anthracis"
+      ],
+      "mlst_schemes": []
+    },
+    {
+      "schema_id": "bordetella_pertussis",
+      "schema_dir": "bordetella_pertussis",
+      "species": [
+        "Bordetella pertussis"
+      ],
+      "mlst_schemes": [
+        "bordetella_3"
+      ]
+    },
+    {
+      "schema_id": "brucella_melitensis",
+      "schema_dir": "brucella_melitensis",
+      "species": [
+        "Brucella melitensis"
+      ],
+      "mlst_schemes": []
+    },
+    {
+      "schema_id": "brucella_spp",
+      "schema_dir": "brucella_spp",
+      "species": [
+        "Brucella spp.",
+        "Brucella abortus",
+        "Brucella canis",
+        "Brucella melitensis",
+        "Brucella suis"
+      ],
+      "mlst_schemes": [
+        "brucella"
+      ]
+    },
+    {
+      "schema_id": "burkholderia_mallei_rki",
+      "schema_dir": "burkholderia_mallei_rki",
+      "species": [
+        "Burkholderia mallei"
+      ],
+      "mlst_schemes": []
+    },
+    {
+      "schema_id": "burkholderia_pseudomallei",
+      "schema_dir": "burkholderia_pseudomallei",
+      "species": [
+        "Burkholderia pseudomallei"
+      ],
+      "mlst_schemes": [
+        "bpseudomallei"
+      ]
+    },
+    {
+      "schema_id": "campylobacter_jejuni_coli",
+      "schema_dir": "campylobacter_jejuni_coli",
+      "species": [
+        "Campylobacter jejuni",
+        "Campylobacter coli"
+      ],
+      "mlst_schemes": [
+        "campylobacter"
+      ]
+    },
+    {
+      "schema_id": "citrobacter_freundii",
+      "schema_dir": "citrobacter_freundii",
+      "species": [
+        "Citrobacter freundii"
+      ],
+      "mlst_schemes": [
+        "cfreundii"
+      ]
+    },
+    {
+      "schema_id": "citrobacter_freundii_portucalensis_braakii_europaeus",
+      "schema_dir": "citrobacter_freundii_portucalensis_braakii_europaeus",
+      "species": [
+        "Citrobacter freundii",
+        "Citrobacter portucalensis",
+        "Citrobacter braakii",
+        "Citrobacter europaeus"
+      ],
+      "mlst_schemes": []
+    },
+    {
+      "schema_id": "clostridioides_difficile",
+      "schema_dir": "clostridioides_difficile",
+      "species": [
+        "Clostridioides difficile",
+        "Clostridium difficile"
+      ],
+      "mlst_schemes": [
+        "cdifficile"
+      ]
+    },
+    {
+      "schema_id": "clostridium_perfringens",
+      "schema_dir": "clostridium_perfringens",
+      "species": [
+        "Clostridium perfringens"
+      ],
+      "mlst_schemes": [
+        "cperfringens"
+      ]
+    },
+    {
+      "schema_id": "corynebacterium_diphtheriae",
+      "schema_dir": "corynebacterium_diphtheriae",
+      "species": [
+        "Corynebacterium diphtheriae"
+      ],
+      "mlst_schemes": [
+        "cdiphtheriae",
+        "diphtheria_3"
+      ]
+    },
+    {
+      "schema_id": "corynebacterium_pseudotuberculosis",
+      "schema_dir": "corynebacterium_pseudotuberculosis",
+      "species": [
+        "Corynebacterium pseudotuberculosis"
+      ],
+      "mlst_schemes": []
+    },
+    {
+      "schema_id": "cronobacter_sakazakii_malonaticus",
+      "schema_dir": "cronobacter_sakazakii_malonaticus",
+      "species": [
+        "Cronobacter sakazakii",
+        "Cronobacter malonaticus"
+      ],
+      "mlst_schemes": [
+        "cronobacter"
+      ]
+    },
+    {
+      "schema_id": "enterobacter_hormaechei",
+      "schema_dir": "enterobacter_hormaechei",
+      "species": [
+        "Enterobacter hormaechei"
+      ],
+      "mlst_schemes": []
+    },
+    {
+      "schema_id": "enterococcus_faecalis",
+      "schema_dir": "enterococcus_faecalis",
+      "species": [
+        "Enterococcus faecalis"
+      ],
+      "mlst_schemes": [
+        "efaecalis"
+      ]
+    },
+    {
+      "schema_id": "enterococcus_faecium",
+      "schema_dir": "enterococcus_faecium",
+      "species": [
+        "Enterococcus faecium"
+      ],
+      "mlst_schemes": [
+        "efaecium"
+      ]
+    },
+    {
+      "schema_id": "francisella_tularensis",
+      "schema_dir": "francisella_tularensis",
+      "species": [
+        "Francisella tularensis"
+      ],
+      "mlst_schemes": []
+    },
+    {
+      "schema_id": "klebsiella_oxytoca_grimontii_michiganensis_pasteurii",
+      "schema_dir": "klebsiella_oxytoca_grimontii_michiganensis_pasteurii",
+      "species": [
+        "Klebsiella oxytoca",
+        "Klebsiella grimontii",
+        "Klebsiella michiganensis",
+        "Klebsiella pasteurii"
+      ],
+      "mlst_schemes": [
+        "koxytoca"
+      ]
+    },
+    {
+      "schema_id": "legionella_pneumophila",
+      "schema_dir": "legionella_pneumophila",
+      "species": [
+        "Legionella pneumophila"
+      ],
+      "mlst_schemes": []
+    },
+    {
+      "schema_id": "listeria_monocytogenes",
+      "schema_dir": "listeria_monocytogenes",
+      "species": [
+        "Listeria monocytogenes"
+      ],
+      "mlst_schemes": [
+        "listeria_2"
+      ]
+    },
+    {
+      "schema_id": "morganella_morganii",
+      "schema_dir": "morganella_morganii",
+      "species": [
+        "Morganella morganii"
+      ],
+      "mlst_schemes": []
+    },
+    {
+      "schema_id": "mycobacterium_tuberculosis_bovis_africanum_canettii",
+      "schema_dir": "mycobacterium_tuberculosis_bovis_africanum_canettii",
+      "species": [
+        "Mycobacterium tuberculosis",
+        "Mycobacterium bovis",
+        "Mycobacterium africanum",
+        "Mycobacterium canettii"
+      ],
+      "mlst_schemes": [
+        "mbovis",
+        "mbovis_2"
+      ]
+    },
+    {
+      "schema_id": "mycobacteroides_abscessus",
+      "schema_dir": "mycobacteroides_abscessus",
+      "species": [
+        "Mycobacteroides abscessus",
+        "Mycobacterium abscessus"
+      ],
+      "mlst_schemes": [
+        "mabscessus"
+      ]
+    },
+    {
+      "schema_id": "mycoplasma_gallisepticum",
+      "schema_dir": "mycoplasma_gallisepticum",
+      "species": [
+        "Mycoplasma gallisepticum"
+      ],
+      "mlst_schemes": [
+        "mgallisepticum",
+        "mgallisepticum_2"
+      ]
+    },
+    {
+      "schema_id": "paenibacillus_larvae",
+      "schema_dir": "paenibacillus_larvae",
+      "species": [
+        "Paenibacillus larvae"
+      ],
+      "mlst_schemes": [
+        "plarvae"
+      ]
+    },
+    {
+      "schema_id": "proteus_mirabilis",
+      "schema_dir": "proteus_mirabilis",
+      "species": [
+        "Proteus mirabilis"
+      ],
+      "mlst_schemes": [
+        "proteus"
+      ]
+    },
+    {
+      "schema_id": "providencia_stuartii",
+      "schema_dir": "providencia_stuartii",
+      "species": [
+        "Providencia stuartii"
+      ],
+      "mlst_schemes": [
+        "providencia"
+      ]
+    },
+    {
+      "schema_id": "pseudomonas_aeruginosa",
+      "schema_dir": "pseudomonas_aeruginosa",
+      "species": [
+        "Pseudomonas aeruginosa"
+      ],
+      "mlst_schemes": [
+        "paeruginosa"
+      ]
+    },
+    {
+      "schema_id": "serratia_marcescens",
+      "schema_dir": "serratia_marcescens",
+      "species": [
+        "Serratia marcescens"
+      ],
+      "mlst_schemes": [
+        "serratia"
+      ]
+    },
+    {
+      "schema_id": "staphylococcus_argenteus",
+      "schema_dir": "staphylococcus_argenteus",
+      "species": [
+        "Staphylococcus argenteus"
+      ],
+      "mlst_schemes": []
+    },
+    {
+      "schema_id": "staphylococcus_capitis",
+      "schema_dir": "staphylococcus_capitis",
+      "species": [
+        "Staphylococcus capitis"
+      ],
+      "mlst_schemes": []
+    },
+    {
+      "schema_id": "streptococcus_pyogenes",
+      "schema_dir": "streptococcus_pyogenes",
+      "species": [
+        "Streptococcus pyogenes"
+      ],
+      "mlst_schemes": [
+        "spyogenes"
+      ]
+    }
+  ]
+}

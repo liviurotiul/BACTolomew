@@ -11,6 +11,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from .panaroo_style import _apply_analysis_panel_style, _log_view_event
 from .polars_io import read_csv_df
+from .theme import out_of_set_rgb
 
 try:
     import pyqtgraph as pg
@@ -36,7 +37,53 @@ _ROARY_META_COLUMNS = {
 }
 
 
+# Cell values of the drawn matrix: gene absent, gene present, a blank row (a
+# tree leaf the Panaroo matrix has no column for), and absent and present in
+# a dimmed row (a leaf outside the sample set, greyed in the tree). Blank and
+# dimmed rows occur in linked rows only. A dimmed row is the row's own
+# colors at the shared out of set opacity (theme.OUT_OF_SET_OPACITY): washed
+# out, while its genes still show (present cells stay apart from absent ones,
+# in set or not).
+_CELL_ABSENT = 0
+_CELL_PRESENT = 1
+_CELL_BLANK = 2
+_CELL_DIM_ABSENT = 3
+_CELL_DIM_PRESENT = 4
+_CELL_DIM_OFFSET = _CELL_DIM_ABSENT - _CELL_ABSENT
+_CELL_ABSENT_RGB = (240, 240, 240)
+_CELL_PRESENT_RGB = (30, 136, 229)
+_CELL_COLORS = (
+    _CELL_ABSENT_RGB,
+    _CELL_PRESENT_RGB,
+    (255, 255, 255),
+    out_of_set_rgb(_CELL_ABSENT_RGB),
+    out_of_set_rgb(_CELL_PRESENT_RGB),
+)
+# Sample names label the rows only while a row is at least this many pixels
+# tall; thinner rows name their sample in the tooltip only.
+MIN_LABELED_ROW_PX = 11.0
+
+
 class PanHeatmapWidget(QtWidgets.QWidget):
+    """The Panaroo gene presence/absence matrix: genes across, samples down.
+
+    Every row is always in view: the vertical range is locked to all rows,
+    fitted to the plot's height whatever its size, with no vertical scroll or
+    zoom. The wheel and dragging pan and zoom the genes only, within the
+    matrix. Rows are labeled with their sample while they are at least
+    MIN_LABELED_ROW_PX tall; the hovered row always names its sample in the
+    tooltip.
+
+    Own rows (the default): the samples of the filter, in ``set_sample_order``
+    order.
+
+    Linked rows (``set_linked_rows``): the rows are exactly the given samples
+    (a tree's drawn leaves, top to bottom, panels/row_link.py); a sample the
+    matrix lacks is a blank row, a sample outside the filter is a dimmed row
+    (the tree greys it) and matrix samples not listed are left out. Only the
+    order is linked: the tree's scroll and zoom never move these rows.
+    """
+
     viewChanged = QtCore.pyqtSignal()
     sampleHovered = QtCore.pyqtSignal(object)
 
@@ -74,6 +121,16 @@ class PanHeatmapWidget(QtWidgets.QWidget):
         self._multi_highlight_item = None
         self._display_sample_labels: List[str] = []
         self._display_shape: Tuple[int, int] = (0, 0)
+        # Linked rows (None: the heatmap's own rows) and how many matrix
+        # samples they leave out.
+        self._linked_rows: Optional[List[str]] = None
+        self._linked_omitted = 0
+        # Linked rows drawn dimmed (outside the sample set).
+        self._dimmed_rows: List[str] = []
+        # The row labels of the drawn rows, top to bottom (shown when tall enough).
+        self._row_labels: List[str] = []
+        # The gene axis's height while shown (a hidden pyqtgraph axis reports 0).
+        self._gene_axis_height = 0.0
         self._build_ui()
         if auto_refresh:
             self.refresh()
@@ -101,9 +158,13 @@ class PanHeatmapWidget(QtWidgets.QWidget):
         plot.viewport().setMouseTracking(True)
         plot.viewport().installEventFilter(self)
         plot.getPlotItem().setMenuEnabled(False)
+        # The rows start at the very top and reach the bottom (or the gene
+        # axis): no margin above or below them.
+        plot.getPlotItem().layout.setContentsMargins(1, 0, 1, 0)
         plot.getPlotItem().setLabel("bottom", "Genes")
         plot.getPlotItem().setLabel("left", "Samples")
-        plot.getPlotItem().vb.sigRangeChanged.connect(lambda *_: self.viewChanged.emit())
+        plot.getPlotItem().vb.sigRangeChanged.connect(self._on_range_changed)
+        plot.getPlotItem().vb.sigResized.connect(self._on_plot_resized)
 
         self._image_item = pg.ImageItem()
         plot.addItem(self._image_item)
@@ -131,6 +192,9 @@ class PanHeatmapWidget(QtWidgets.QWidget):
         self._highlight_anim.setEasingCurve(QtCore.QEasingCurve.Type.InOutQuad)
         layout.addWidget(plot, stretch=1)
         self._plot = plot
+
+    def _on_plot_resized(self, *_args: object) -> None:
+        self._apply_row_labels()
 
     def refresh(self) -> None:
         if pg is None or self._image_item is None:
@@ -178,6 +242,10 @@ class PanHeatmapWidget(QtWidgets.QWidget):
                 self._update_hover_from_scene(scene_pos)
             elif event.type() == QtCore.QEvent.Type.Leave:
                 self._set_hover_sample(None)
+            elif event.type() == QtCore.QEvent.Type.Resize:
+                # The plot's own size (the info label above it can change it
+                # without resizing this widget).
+                self._fit_gene_axis()
         return super().eventFilter(obj, event)
 
     def set_filters(
@@ -197,6 +265,30 @@ class PanHeatmapWidget(QtWidgets.QWidget):
 
     def display_samples(self) -> List[str]:
         return list(self._display_sample_labels)
+
+    # ------------------------------------------------------------ linked rows
+    def linked_rows(self) -> Optional[List[str]]:
+        return list(self._linked_rows) if self._linked_rows is not None else None
+
+    def linked_omitted(self) -> int:
+        """Matrix samples the linked rows leave out (not leaves of the tree)."""
+        return self._linked_omitted if self._linked_rows is not None else 0
+
+    def dimmed_rows(self) -> List[str]:
+        """Linked rows drawn dimmed: leaves outside the sample set."""
+        return list(self._dimmed_rows) if self._linked_rows is not None else []
+
+    def set_linked_rows(self, rows: Optional[Sequence[str]]) -> None:
+        """Draw exactly these rows, top to bottom (None: the heatmap's own
+        rows again, fitted to the height)."""
+        value = [str(s) for s in rows] if rows is not None else None
+        if value == self._linked_rows:
+            return
+        self._linked_rows = value
+        self._apply_filters()
+
+    def _on_range_changed(self, *_args: object) -> None:
+        self.viewChanged.emit()
 
     def sample_viewport_y(self, sample: str) -> Optional[float]:
         if pg is None or self._plot is None:
@@ -273,6 +365,10 @@ class PanHeatmapWidget(QtWidgets.QWidget):
             gene_mask &= self._annotation_series.str.contains(self._filter_product_text, case=False, na=False)
         gene_idx = gene_mask[gene_mask].index.to_numpy()
 
+        if self._linked_rows is not None:
+            self._apply_linked_rows(gene_idx)
+            return
+
         if self._filter_samples is None:
             sample_idx = np.arange(samples_total, dtype=int)
         else:
@@ -291,7 +387,8 @@ class PanHeatmapWidget(QtWidgets.QWidget):
             sample_idx = np.array(ordered, dtype=int)
 
         if gene_idx.size == 0 or sample_idx.size == 0:
-            self._image_item.setImage(np.zeros((1, 1)), levels=(0, 1), autoLevels=False)
+            self._image_item.setImage(np.zeros((1, 1)), levels=(0, len(_CELL_COLORS) - 1), autoLevels=False)
+            self._set_sample_axis_label(0)
             self._lock_vertical_range(rows=1)
             self._apply_ticks([], [])
             self._info.setText("No genes or samples match the current filters.")
@@ -308,17 +405,82 @@ class PanHeatmapWidget(QtWidgets.QWidget):
         matrix = np.rot90(matrix, k=1)
         x_labels = gene_labels
         y_labels = list(reversed(sample_labels))
-        cmap = pg.ColorMap([0.0, 1.0], [(240, 240, 240), (30, 136, 229)])
-        self._image_item.setLookupTable(cmap.getLookupTable())
-        self._image_item.setImage(matrix, levels=(0, 1), autoLevels=False)
+        self._set_matrix(matrix)
         self._lock_vertical_range(rows=matrix.shape[0])
-
+        self._set_sample_axis_label(0)
         self._display_sample_labels = y_labels
         self._display_shape = matrix.shape
         self._apply_highlight()
         self._apply_ticks(x_labels, y_labels)
         if note:
             _log_view_event(f"Panaroo gene presence view downsampled: {note}")
+        self._info.clear()
+        self._info.setVisible(False)
+        self.viewChanged.emit()
+
+    def _set_matrix(self, matrix: np.ndarray) -> None:
+        lut = np.array(_CELL_COLORS, dtype=np.ubyte)
+        self._image_item.setLookupTable(lut)
+        # Levels over the color table: each cell value is its color.
+        self._image_item.setImage(matrix, levels=(0, len(_CELL_COLORS) - 1), autoLevels=False)
+        # Dragging the genes stays within the matrix.
+        if self._plot is not None:
+            cols = float(max(1, matrix.shape[1]))
+            self._plot.getPlotItem().vb.setLimits(xMin=0.0, xMax=cols, maxXRange=cols)
+
+    def _set_sample_axis_label(self, omitted: int) -> None:
+        if pg is None or self._plot is None:
+            return
+        axis = self._plot.getPlotItem().getAxis("left")
+        label = "Samples" if not omitted else f"Samples ({omitted} not in tree)"
+        self._plot.getPlotItem().setLabel("left", label)
+        axis.setToolTip(
+            ""
+            if not omitted
+            else f"{omitted} sample(s) of the Panaroo matrix are not leaves of the tree, so they have no row here"
+        )
+
+    def _apply_linked_rows(self, gene_idx: np.ndarray) -> None:
+        """Rows exactly as linked: one per listed sample (blank when the
+        matrix has no such sample), genes downsampled only."""
+        rows = list(self._linked_rows or [])
+        column = {name: i for i, name in enumerate(self._sample_labels)}
+        # Matrix samples of the sample set that are not rows (not tree leaves).
+        listed = set(rows)
+        allowed = set(self._filter_samples) if self._filter_samples is not None else None
+        self._linked_omitted = len(
+            [name for name in self._sample_labels if name not in listed and (allowed is None or name in allowed)]
+        )
+        if gene_idx.size == 0 or not rows:
+            self._image_item.setImage(np.zeros((1, 1)), levels=(0, len(_CELL_COLORS) - 1), autoLevels=False)
+            self._lock_vertical_range(rows=len(rows))
+            self._display_sample_labels = list(rows)
+            self._display_shape = (len(rows), 0)
+            self._apply_ticks([], [])
+            self._apply_highlight()
+            self._set_sample_axis_label(self._linked_omitted)
+            self.viewChanged.emit()
+            return
+        gene_step = max(1, math.ceil(gene_idx.size / 2000))
+        gene_idx = gene_idx[::gene_step]
+        matrix = np.full((len(rows), gene_idx.size), _CELL_BLANK, dtype=np.uint8)
+        self._dimmed_rows = []
+        for row, name in enumerate(rows):
+            col = column.get(name)
+            if col is not None:
+                matrix[row, :] = self._presence[gene_idx, col]
+                if allowed is not None and name not in allowed:
+                    # Outside the sample set: greyed in the tree, dimmed here.
+                    matrix[row, :] += _CELL_DIM_OFFSET
+                    self._dimmed_rows.append(name)
+        # Rows top to bottom (the y axis is inverted): row-major, y = sample.
+        self._set_matrix(matrix)
+        self._lock_vertical_range(rows=len(rows))
+        self._display_sample_labels = list(rows)
+        self._display_shape = matrix.shape
+        self._apply_highlight()
+        self._apply_ticks([self._gene_labels[i] for i in gene_idx], list(rows))
+        self._set_sample_axis_label(self._linked_omitted)
         self._info.clear()
         self._info.setVisible(False)
         self.viewChanged.emit()
@@ -341,18 +503,56 @@ class PanHeatmapWidget(QtWidgets.QWidget):
         if sample == self._hover_sample:
             return
         self._hover_sample = sample
+        if self._plot is not None:
+            viewport = self._plot.viewport()
+            text = self._row_tooltip(sample)
+            viewport.setToolTip(text)
+            # A tip on screen keeps its text: show the new row's at once.
+            if QtWidgets.QToolTip.isVisible():
+                if text:
+                    QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), text, viewport)
+                else:
+                    QtWidgets.QToolTip.hideText()
         self.sampleHovered.emit(sample)
+
+    def _row_tooltip(self, sample: Optional[str]) -> str:
+        """The hovered row's sample (rows too thin to label say it here)."""
+        if not sample:
+            return ""
+        if self._linked_rows is not None and sample in self._dimmed_rows:
+            return f"{sample} (outside the sample set)"
+        if self._linked_rows is not None and sample not in self._sample_labels:
+            return f"{sample} (not in the Panaroo matrix)"
+        return sample
 
     def _update_hover_from_scene(self, scene_pos: QtCore.QPointF) -> None:
         sample = self._sample_from_scene_pos(scene_pos)
         self._set_hover_sample(sample)
 
-    def _lock_vertical_range(self, rows: int) -> None:
+    def _fit_gene_axis(self, rows: Optional[int] = None) -> None:
+        """Show the gene axis (its title and gene ticks) below the rows only
+        while it leaves every row at least a pixel: shorter, the rows take its
+        height too, so each one can still be hovered."""
         if pg is None or self._plot is None:
             return
+        item = self._plot.getPlotItem()
+        axis = item.getAxis("bottom")
+        if axis.isVisible():
+            self._gene_axis_height = float(axis.minimumHeight())
+        rows_height = float(self._plot.viewport().height()) - self._gene_axis_height
+        show = rows_height >= float(max(1, self.row_count() if rows is None else rows))
+        if show != axis.isVisible():
+            item.showAxis("bottom", show)
+
+    def _lock_vertical_range(self, rows: int) -> None:
+        """Every row in view, fitted to the height: no vertical scroll or zoom."""
+        if pg is None or self._plot is None:
+            return
+        self._fit_gene_axis(rows)
         rows_f = float(max(1, rows))
         vb = self._plot.getPlotItem().vb
         vb.enableAutoRange(axis=pg.ViewBox.YAxis, enable=False)
+        self._plot.getPlotItem().showButtons()
         vb.setLimits(
             yMin=0.0,
             yMax=rows_f,
@@ -390,11 +590,28 @@ class PanHeatmapWidget(QtWidgets.QWidget):
         else:
             plot.getAxis("bottom").setTicks([])
 
-        if len(y_labels) <= 50:
-            y_ticks = [(i + 0.5, g) for i, g in enumerate(y_labels)]
-            plot.getAxis("left").setTicks([y_ticks])
+        self._row_labels = list(y_labels)
+        self._apply_row_labels()
+
+    def row_count(self) -> int:
+        """The rows drawn (all of them always fitted to the height)."""
+        return len(self._display_sample_labels or ())
+
+    def row_labels_shown(self) -> bool:
+        """Whether the rows are tall enough to carry their sample names."""
+        if pg is None or self._plot is None or not self._row_labels:
+            return False
+        height = float(self._plot.getPlotItem().vb.height())
+        return height / float(len(self._row_labels)) >= MIN_LABELED_ROW_PX
+
+    def _apply_row_labels(self) -> None:
+        if pg is None or self._plot is None:
+            return
+        if self.row_labels_shown():
+            ticks = [(i + 0.5, name) for i, name in enumerate(self._row_labels)]
+            self._plot.getAxis("left").setTicks([ticks])
         else:
-            plot.getAxis("left").setTicks([])
+            self._plot.getAxis("left").setTicks([])
 
     def _apply_highlight(self) -> None:
         if self._multi_highlight_item is not None:

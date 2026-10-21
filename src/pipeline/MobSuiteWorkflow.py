@@ -13,6 +13,7 @@ from typing import Any, Mapping
 import pandas as pd
 
 from pipeline.FastaUtils import prepare_query_fasta
+from pipeline.RunSteps import ProgressCallback, report_progress
 from pipeline.ToolEnv import configured_mobsuite_settings, tool_cmd
 
 
@@ -390,6 +391,7 @@ def run_mobsuite(
     *,
     threads: int,
     config: Mapping[str, Any] | None = None,
+    progress: ProgressCallback = None,
 ) -> MobSuiteResult:
     settings = validate_mobsuite_settings(config)
     db_dir = str(settings.get("database_directory") or "").strip()
@@ -409,7 +411,9 @@ def run_mobsuite(
         sanitized_root = tmp_root / "input"
         sanitized_root.mkdir(parents=True, exist_ok=True)
 
-        for genome in genome_files:
+        genome_files = list(genome_files)
+        for done, genome in enumerate(genome_files):
+            report_progress(progress, done, len(genome_files))
             sample = genome.stem
             sample_tmp = tmp_root / f"{sample}__mobrecon_out"
             sample_out = per_sample_root / sample
@@ -484,6 +488,7 @@ def run_mobsuite(
             except Exception as exc:
                 failures.append(f"{sample}: {exc}")
                 logger.error("MOB-suite failed on %s: %s", genome.name, exc)
+        report_progress(progress, len(genome_files), len(genome_files))
 
     if failures:
         preview = "; ".join(failures[:5])

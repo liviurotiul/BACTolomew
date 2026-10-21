@@ -6,8 +6,26 @@
 # Conda tool environments (~24G, machine-specific; tools run via Docker at runtime)
 /envs/
 
-# Reference databases (~22G; fetched/seeded during first-time setup)
+# Reference databases (made by first-time setup: catalogs, cgMLST schemes, user databases)
 /DB/
+
+# Tool databases first-time setup downloads (full Bakta about 76G, CheckM2) and DbDownload's default
+/bakta_db/
+/bakta_db_*/
+/checkm2_db/
+/tool_dbs/
+/databases/
+
+# Tools image as an Apptainer/Singularity file (setup's default place) and saved image archives
+*.sif
+*.tar
+*.tar.gz
+*.tar.xz
+*.tar.zst
+*.tar.bz2
+*.tgz
+*.zip
+*.7z
 
 # Pipeline run outputs (~25G)
 /runs/
@@ -25,6 +43,7 @@ __pycache__/
 
 # Python virtual environments
 .venv/
+.venv*/
 venv/
 .env
 
@@ -32,7 +51,23 @@ venv/
 /bactolomew_config.json
 
 # Map backend experiment outputs (source kept, rendered artifacts ignored)
-/map_tests/out/
+/misc/map_tests/out/
+
+# Per-run UI cache, logs, scratch work and backups
+ui_cache.json
+*.log
+nohup.out
+/scratch/
+*.partial/
+*.bak
+*.orig
+
+# Personal editor settings and local agent settings (machine-specific paths)
+.idea/
+.vscode/
+*.code-workspace
+.agents/
+.claude/settings.local.json
 
 # Editor / tooling / OS junk
 .DS_Store
@@ -41,3 +76,10 @@ Thumbs.db
 *.swo
 *~
 .codex
+
+# Agent notes and tooling (kept private)
+.claude/
+CLAUDE.md
+
+# Manuscript plotting scripts (R), kept private
+src/scripts/*.R

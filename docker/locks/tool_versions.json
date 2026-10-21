@@ -1,0 +1,405 @@
+{
+  "locks_exported_from": {
+    "image": "bactolomew-tools:0.1.0",
+    "image_id": "sha256:57e1e48cff74 (local only, never pushed, so no registry digest)",
+    "image_created": "2026-07-08T11:43:20+03:00",
+    "exported": "2026-10-13, conda list --explicit --md5 inside the image (docker run --rm --network none)",
+    "note": "The image the locks were exported from, not necessarily the image that carries this file: an image built by docker/Dockerfile installs its envs from these locks, so it holds the same packages. The carrying image's own identity is in its OCI labels."
+  },
+  "platform": "linux/amd64",
+  "build_provenance": {
+    "dockerfile_note": "The image was built from an earlier revision of docker/Dockerfile: label title 'contexar-tools', yamls copied to /opt/contexar/yamls, and no libncurses.so.5 symlink layer. The yamls inside the image equal yamls/*.yaml except for the env 'name:' field (contexar-* vs bactolomew-*), which mamba env create -n overrides.",
+    "base_os": "Ubuntu 24.04.4 LTS",
+    "conda": "conda 26.3.2, mamba 2.5.0 (Miniforge3 26.3.2-3)",
+    "base_images": {
+      "condaforge/miniforge3": {
+        "tag_used": "latest (resolved to Miniforge3 26.3.2-3 when built, image created 2026-07-01)",
+        "original_digest": "not recoverable: the base image is no longer present locally and the registry tag 26.3.2-3 was rebuilt on 2026-08-04 with a different miniforge layer",
+        "layers_in_image": [
+          "sha256:538812a4b9bd45adaac2b5e5b967daa6999aa44eb110aa32ae7c69702b906475 (ubuntu 24.04, 2026-04-10)",
+          "sha256:7f6b956bb331cd852caaac5910d6781a74d537bb5fffbe3adc189ede34b14dc3 (miniforge install)"
+        ],
+        "current_digest_26.3.2-3": "sha256:532f6ee7a858b009dc895f8313eb6ed875f05a455ec57d832aa6b4c66e2799b9 (index; linux/amd64 manifest sha256:95195a50e20f7929a31a68ea407cefe117423258639efb6b66f0518e4b86f8ee; same ubuntu layer, different miniforge layer)",
+        "current_digest_latest": "sha256:f752860f77bd417aa4db35be3d2e906fdb740fb80f40755ed651fff9e8873aad (index, created 2026-10-02; linux/amd64 manifest sha256:be01a3e63d4af20d8a9937d1e12fa299d1c572edf601b961180a59c78bd7250d; newer ubuntu layer)"
+      },
+      "pgcbioinfo/fastgear": {
+        "tag_used": "latest",
+        "digest": "sha256:afb299e7fb327129ebf2acc1bcae00e0a54cd6fbe71d114d0a9f1642a2216b79",
+        "note": "present locally and still identical on Docker Hub (single-arch manifest, created 2022-12-01); only its /opt is copied in"
+      }
+    }
+  },
+  "fastgear": {
+    "env": "none (MATLAB MCR launcher, /opt/run_fastGEAR.sh)",
+    "version": "no version string in the binary; identified by the source image digest and file hashes",
+    "fastGEAR_sha256": "8c894a244ff7826c1173137b4bbe205980eb06c7e9bef4a52c698ca47cb0b970",
+    "run_fastGEAR.sh_sha256": "7fdb0fd46ef891178162d32fa9e5edced4a7333a2dd059d50c068a4205a2d980",
+    "mcr": "MATLAB Runtime 9.0.1 (R2016a) at /opt/v901 (requiredMCRProducts 35000 35010)"
+  },
+  "envs": {
+    "bakta": {
+      "lock": "bakta.lock",
+      "packages_total": 177,
+      "tools": {
+        "bakta": {
+          "version": "1.10.4",
+          "build": "pyhdfd78af_1",
+          "channel": "bioconda"
+        },
+        "ncbi-amrfinderplus": {
+          "version": "4.0.23",
+          "build": "hf69ffd2_0",
+          "channel": "bioconda"
+        },
+        "diamond": {
+          "version": "2.1.10",
+          "build": "h5ca1c30_3",
+          "channel": "bioconda"
+        },
+        "blast": {
+          "version": "2.16.0",
+          "build": "h66d330f_5",
+          "channel": "bioconda"
+        },
+        "blast-legacy": {
+          "version": "2.2.26",
+          "build": "hf7ff83a_5",
+          "channel": "bioconda"
+        },
+        "pyrodigal": {
+          "version": "3.6.3.post1",
+          "build": "py311haab0aaa_1",
+          "channel": "bioconda"
+        },
+        "pyhmmer": {
+          "version": "0.11.0",
+          "build": "py311haab0aaa_1",
+          "channel": "bioconda"
+        },
+        "hmmer": {
+          "version": "3.4",
+          "build": "hb6cb901_4",
+          "channel": "bioconda"
+        },
+        "infernal": {
+          "version": "1.1.5",
+          "build": "pl5321h7b50bb2_4",
+          "channel": "bioconda"
+        },
+        "trnascan-se": {
+          "version": "2.0.12",
+          "build": "pl5321h7b50bb2_2",
+          "channel": "bioconda"
+        },
+        "aragorn": {
+          "version": "1.2.41",
+          "build": "h7b50bb2_5",
+          "channel": "bioconda"
+        },
+        "python": {
+          "version": "3.11.14",
+          "build": "hd63d673_3_cpython",
+          "channel": "conda-forge"
+        }
+      },
+      "notes": {
+        "ncbi-amrfinderplus": "amrfinder runs from this env (ToolEnv maps amrfinder -> bakta). The image ships no AMRFinderPlus database (share/amrfinderplus/data is absent); the pipeline passes --database <bakta_db>/amrfinderplus-db/latest. On this machine bakta_db=/Shared/bakta_db_full/db/db (Bakta DB v5.1 full, 2024-01-19, built with AMRFinderPlus DB 2023-11-15.1); its amrfinderplus-db/latest points to 2025-03-25.1 (updated with amrfinder_update). The DB is data outside the image and is not covered by these locks."
+      }
+    },
+    "diamond": {
+      "lock": "diamond.lock",
+      "packages_total": 7,
+      "tools": {
+        "diamond": {
+          "version": "2.2.3",
+          "build": "he361c42_0",
+          "channel": "bioconda"
+        }
+      }
+    },
+    "mobsuite": {
+      "lock": "mobsuite.lock",
+      "packages_total": 177,
+      "tools": {
+        "mob_suite": {
+          "version": "3.1.9",
+          "build": "pyhdfd78af_1",
+          "channel": "bioconda"
+        },
+        "blast": {
+          "version": "2.15.0",
+          "build": "pl5321h6f7f691_1",
+          "channel": "bioconda"
+        },
+        "python": {
+          "version": "3.11.9",
+          "build": "hb806964_0_cpython",
+          "channel": "conda-forge"
+        }
+      }
+    },
+    "phylogeny": {
+      "lock": "phylogeny.lock",
+      "packages_total": 257,
+      "tools": {
+        "snippy": {
+          "version": "4.6.0",
+          "build": "hdfd78af_6",
+          "channel": "bioconda"
+        },
+        "raxml-ng": {
+          "version": "1.2.2",
+          "build": "h6747034_2",
+          "channel": "bioconda"
+        },
+        "minimap2": {
+          "version": "2.28",
+          "build": "he4a0461_3",
+          "channel": "bioconda"
+        },
+        "bwa": {
+          "version": "0.7.18",
+          "build": "he4a0461_1",
+          "channel": "bioconda"
+        },
+        "samtools": {
+          "version": "1.20",
+          "build": "h50ea8bc_1",
+          "channel": "bioconda"
+        },
+        "bcftools": {
+          "version": "1.21",
+          "build": "h8b25389_0",
+          "channel": "bioconda"
+        },
+        "freebayes": {
+          "version": "1.3.6",
+          "build": "hb0f3ef8_5",
+          "channel": "bioconda"
+        },
+        "python": {
+          "version": "3.12.3",
+          "build": "hab00c5b_0_cpython",
+          "channel": "conda-forge"
+        }
+      }
+    },
+    "gubbins": {
+      "lock": "gubbins.lock",
+      "packages_total": 270,
+      "tools": {
+        "gubbins": {
+          "version": "3.4.3",
+          "build": "py310hfc0ef84_1",
+          "channel": "bioconda"
+        },
+        "iqtree": {
+          "version": "2.4.0",
+          "build": "h503566f_0",
+          "channel": "bioconda"
+        },
+        "raxml": {
+          "version": "8.2.13",
+          "build": "h7b50bb2_3",
+          "channel": "bioconda"
+        },
+        "raxml-ng": {
+          "version": "2.0.2",
+          "build": "h870a6a7_0",
+          "channel": "bioconda"
+        },
+        "fasttree": {
+          "version": "2.2.0",
+          "build": "h7b50bb2_1",
+          "channel": "bioconda"
+        },
+        "python": {
+          "version": "3.10.20",
+          "build": "h267e890_1_cpython",
+          "channel": "conda-forge"
+        }
+      },
+      "notes": {
+        "iqtree": "the pipeline calls iqtree2 (ToolEnv maps iqtree2 -> gubbins); the iqtree 2.4.0 package provides both iqtree and iqtree2. raxmlHPC -v prints 8.2.12 although the package is raxml 8.2.13 (upstream banner not bumped).",
+        "raxml-ng": "gubbins env has raxml-ng 2.0.2; the phylogeny env (the one the pipeline uses for raxml-ng) has 1.2.2."
+      }
+    },
+    "panaroo": {
+      "lock": "panaroo.lock",
+      "packages_total": 452,
+      "tools": {
+        "panaroo": {
+          "version": "1.8.0",
+          "build": "pyhdfd78af_0",
+          "channel": "bioconda"
+        },
+        "mafft": {
+          "version": "7.526",
+          "build": "h4bc722e_0",
+          "channel": "conda-forge"
+        },
+        "prank": {
+          "version": "251117",
+          "build": "hd63eeec_0",
+          "channel": "bioconda"
+        },
+        "cd-hit": {
+          "version": "4.8.1",
+          "build": "h5ca1c30_13",
+          "channel": "bioconda"
+        },
+        "diamond": {
+          "version": "2.2.3",
+          "build": "he361c42_0",
+          "channel": "bioconda"
+        },
+        "prodigal": {
+          "version": "2.6.3",
+          "build": "h577a1d6_11",
+          "channel": "bioconda"
+        },
+        "python": {
+          "version": "3.11.15",
+          "build": "h7508c33_1_cpython",
+          "channel": "conda-forge"
+        }
+      }
+    },
+    "mafft": {
+      "lock": "mafft.lock",
+      "packages_total": 15,
+      "tools": {
+        "mafft": {
+          "version": "7.526",
+          "build": "h4bc722e_0",
+          "channel": "conda-forge"
+        }
+      }
+    },
+    "chewbbaca": {
+      "lock": "chewbbaca.lock",
+      "packages_total": 107,
+      "tools": {
+        "chewbbaca": {
+          "version": "3.5.4",
+          "build": "pyh106432d_0",
+          "channel": "bioconda"
+        },
+        "blast": {
+          "version": "2.17.0",
+          "build": "h66d330f_0",
+          "channel": "bioconda"
+        },
+        "pyrodigal": {
+          "version": "3.7.1",
+          "build": "py313h8c92656_1",
+          "channel": "bioconda"
+        },
+        "mafft": {
+          "version": "7.526",
+          "build": "h4bc722e_0",
+          "channel": "conda-forge"
+        },
+        "fasttree": {
+          "version": "2.2.0",
+          "build": "h7b50bb2_1",
+          "channel": "bioconda"
+        },
+        "python": {
+          "version": "3.13.14",
+          "build": "h6add32d_100_cp313",
+          "channel": "conda-forge"
+        }
+      }
+    },
+    "mlst": {
+      "lock": "mlst.lock",
+      "packages_total": 259,
+      "tools": {
+        "mlst": {
+          "version": "2.35.0",
+          "build": "hdfd78af_0",
+          "channel": "bioconda"
+        },
+        "blast": {
+          "version": "2.17.0",
+          "build": "h66d330f_0",
+          "channel": "bioconda"
+        },
+        "any2fasta": {
+          "version": "0.8.1",
+          "build": "hdfd78af_0",
+          "channel": "bioconda"
+        },
+        "python": {
+          "version": "3.12.13",
+          "build": "hd63d673_0_cpython",
+          "channel": "conda-forge"
+        }
+      },
+      "notes": {
+        "mlst": "PubMLST database bundled in the package: /opt/conda/envs/mlst/db/VERSION.txt = 2025-12-29, 162 schemes in db/pubmlst."
+      }
+    },
+    "assembly_qc": {
+      "lock": "assembly_qc.lock",
+      "packages_total": 257,
+      "tools": {
+        "quast": {
+          "version": "5.3.0",
+          "build": "py312pl5321hdcc493e_1",
+          "channel": "bioconda"
+        },
+        "checkm2": {
+          "version": "1.1.0",
+          "build": "pyh7e72e81_1",
+          "channel": "bioconda"
+        },
+        "diamond": {
+          "version": "2.1.11",
+          "build": "h5ca1c30_2",
+          "channel": "bioconda"
+        },
+        "prodigal": {
+          "version": "2.6.3",
+          "build": "h577a1d6_11",
+          "channel": "bioconda"
+        },
+        "tensorflow": {
+          "version": "2.17.0",
+          "build": "cpu_py312h69ecde4_3",
+          "channel": "conda-forge"
+        },
+        "python": {
+          "version": "3.12.13",
+          "build": "hd63d673_0_cpython",
+          "channel": "conda-forge"
+        }
+      },
+      "notes": {
+        "checkm2": "no CheckM2 database in the image; config assembly_qc.checkm2_database_path points to a host file (uniref100.KO.1.dmnd)."
+      }
+    },
+    "base": {
+      "lock": "base.lock",
+      "packages_total": 88,
+      "tools": {
+        "conda": {
+          "version": "26.3.2",
+          "build": "py313h78bf25f_1",
+          "channel": "conda-forge"
+        },
+        "mamba": {
+          "version": "2.5.0",
+          "build": "h9835478_0",
+          "channel": "conda-forge"
+        },
+        "python": {
+          "version": "3.13.13",
+          "build": "h6add32d_100_cp313",
+          "channel": "conda-forge"
+        }
+      }
+    }
+  }
+}

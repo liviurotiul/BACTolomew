@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-import math
 from pathlib import Path
-from typing import Dict, Mapping, Optional, Sequence
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from .panaroo_force import CgmlstForceGraphView
-from .panaroo_style import (
-    _apply_analysis_group_style,
-    _apply_analysis_panel_style,
-    _log_view_event,
-)
-from .panaroo_widgets import (
-    _LegendSwatchRow,
-    _high_contrast_color,
+from .panaroo_force import CgmlstForceGraphView, GraphKeyEntry
+from .panaroo_style import _log_view_event
+from .panaroo_widgets import _high_contrast_color
+from .settings_column import (
+    SettingsColumn,
+    SettingsStrip,
+    auto_fold,
+    settings_card,
+    settings_control,
+    stacked_field,
 )
 
 _FORCE_SYMBOLS = (
@@ -33,183 +33,10 @@ _FORCE_SYMBOLS = (
 )
 
 
-class _ShapeLegendGlyph(QtWidgets.QWidget):
-    def __init__(
-        self,
-        symbol: str,
-        *,
-        parent: Optional[QtWidgets.QWidget] = None,
-    ) -> None:
-        super().__init__(parent)
-        self._symbol = str(symbol or "").strip() or "o"
-        self.setFixedSize(18, 18)
-
-    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
-        del event
-        painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-        pen = QtGui.QPen(QtGui.QColor("#0f172a"))
-        pen.setWidthF(1.5)
-        painter.setPen(pen)
-        painter.setBrush(QtGui.QBrush(QtGui.QColor("#e2e8f0")))
-
-        rect = QtCore.QRectF(2.0, 2.0, float(self.width()) - 4.0, float(self.height()) - 4.0)
-        cx = rect.center().x()
-        cy = rect.center().y()
-        symbol = self._symbol
-
-        if symbol == "o":
-            painter.drawEllipse(rect)
-            return
-        if symbol == "s":
-            painter.drawRect(rect)
-            return
-        if symbol in {"t", "t1", "t2", "t3"}:
-            if symbol == "t3":
-                points = [
-                    QtCore.QPointF(rect.left(), cy),
-                    QtCore.QPointF(rect.right(), rect.top()),
-                    QtCore.QPointF(rect.right(), rect.bottom()),
-                ]
-            elif symbol == "t2":
-                points = [
-                    QtCore.QPointF(rect.left(), rect.top()),
-                    QtCore.QPointF(rect.left(), rect.bottom()),
-                    QtCore.QPointF(rect.right(), cy),
-                ]
-            elif symbol == "t1":
-                points = [
-                    QtCore.QPointF(cx, rect.bottom()),
-                    QtCore.QPointF(rect.left(), rect.top()),
-                    QtCore.QPointF(rect.right(), rect.top()),
-                ]
-            else:
-                points = [
-                    QtCore.QPointF(cx, rect.top()),
-                    QtCore.QPointF(rect.left(), rect.bottom()),
-                    QtCore.QPointF(rect.right(), rect.bottom()),
-                ]
-            painter.drawPolygon(QtGui.QPolygonF(points))
-            return
-        if symbol == "d":
-            painter.drawPolygon(
-                QtGui.QPolygonF(
-                    [
-                        QtCore.QPointF(cx, rect.top()),
-                        QtCore.QPointF(rect.left(), cy),
-                        QtCore.QPointF(cx, rect.bottom()),
-                        QtCore.QPointF(rect.right(), cy),
-                    ]
-                )
-            )
-            return
-        if symbol == "p":
-            painter.drawPolygon(self._regular_polygon(rect, 5, rotation=-90.0))
-            return
-        if symbol == "h":
-            painter.drawPolygon(self._regular_polygon(rect, 6, rotation=-90.0))
-            return
-        if symbol == "star":
-            painter.drawPolygon(self._star_polygon(rect))
-            return
-        if symbol == "+":
-            painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-            painter.drawLine(QtCore.QPointF(cx, rect.top()), QtCore.QPointF(cx, rect.bottom()))
-            painter.drawLine(QtCore.QPointF(rect.left(), cy), QtCore.QPointF(rect.right(), cy))
-            return
-        if symbol == "x":
-            painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-            painter.drawLine(QtCore.QPointF(rect.left(), rect.top()), QtCore.QPointF(rect.right(), rect.bottom()))
-            painter.drawLine(QtCore.QPointF(rect.left(), rect.bottom()), QtCore.QPointF(rect.right(), rect.top()))
-            return
-        painter.drawEllipse(rect)
-
-    @staticmethod
-    def _regular_polygon(rect: QtCore.QRectF, sides: int, *, rotation: float) -> QtGui.QPolygonF:
-        points = []
-        radius = min(rect.width(), rect.height()) * 0.5
-        center = rect.center()
-        for idx in range(sides):
-            angle = math.radians(rotation + (360.0 * idx / sides))
-            points.append(
-                QtCore.QPointF(
-                    center.x() + radius * math.cos(angle),
-                    center.y() + radius * math.sin(angle),
-                )
-            )
-        return QtGui.QPolygonF(points)
-
-    @staticmethod
-    def _star_polygon(rect: QtCore.QRectF) -> QtGui.QPolygonF:
-        points = []
-        outer = min(rect.width(), rect.height()) * 0.5
-        inner = outer * 0.45
-        center = rect.center()
-        for idx in range(10):
-            angle = math.radians(-90.0 + idx * 36.0)
-            radius = outer if idx % 2 == 0 else inner
-            points.append(
-                QtCore.QPointF(
-                    center.x() + radius * math.cos(angle),
-                    center.y() + radius * math.sin(angle),
-                )
-            )
-        return QtGui.QPolygonF(points)
-
-
-class _ShapeLegendRow(QtWidgets.QWidget):
-    def __init__(
-        self,
-        label: str,
-        symbol: str,
-        count: int,
-        parent: Optional[QtWidgets.QWidget] = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Maximum,
-            QtWidgets.QSizePolicy.Policy.Preferred,
-        )
-        row = QtWidgets.QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(6)
-        row.addWidget(_ShapeLegendGlyph(symbol, parent=self), 0, QtCore.Qt.AlignmentFlag.AlignTop)
-
-        text = QtWidgets.QLabel(f"{label} ({int(count)})", self)
-        text.setWordWrap(True)
-        text.setStyleSheet("color: #334155;")
-        text.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Maximum,
-            QtWidgets.QSizePolicy.Policy.Preferred,
-        )
-        row.addWidget(text, 0, QtCore.Qt.AlignmentFlag.AlignTop)
-
-
-class _ForceLegendSection(QtWidgets.QGroupBox):
-    def __init__(self, title: str, parent: Optional[QtWidgets.QWidget] = None) -> None:
-        super().__init__(title, parent)
-        _apply_analysis_group_style(self)
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(8, 10, 8, 8)
-        layout.setSpacing(6)
-        self._layout = layout
-
-    def clear(self) -> None:
-        while self._layout.count():
-            item = self._layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-
-    def add_widget(self, widget: QtWidgets.QWidget) -> None:
-        self._layout.addWidget(widget)
-
-    def add_stretch(self) -> None:
-        self._layout.addStretch(1)
-
-
 class CgmlstForcePlotPanel(QtWidgets.QWidget):
     sampleHovered = QtCore.pyqtSignal(object)
+    # The "Color nodes by" or "Shape nodes by" choice changed.
+    styleChanged = QtCore.pyqtSignal()
 
     def __init__(
         self,
@@ -223,6 +50,9 @@ class CgmlstForcePlotPanel(QtWidgets.QWidget):
         self._trait_values_by_name: Dict[str, Dict[str, str]] = {}
         self._color_by_value: Dict[str, QtGui.QColor] = {}
         self._symbol_by_value: Dict[str, str] = {}
+        self._sample_filter: Optional[set[str]] = None
+        # The (color, shape) traits styleChanged last reported.
+        self._style_traits: Tuple[str, str] = ("", "")
         self._force_view = CgmlstForceGraphView(
             output_dir,
             reference_sample=reference_sample,
@@ -230,78 +60,83 @@ class CgmlstForcePlotPanel(QtWidgets.QWidget):
         )
         self._force_view.sampleHovered.connect(self.sampleHovered.emit)
 
-        layout = QtWidgets.QVBoxLayout(self)
+        # The Settings column (or its folded strip) beside the graph, as the
+        # Phylogeny's: it folds while the panel is too narrow for both and
+        # opens again when the panel grows, unless the user folded it.
+        layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        strip = SettingsStrip(self)
+        strip.expandRequested.connect(lambda: self.set_settings_open(True))
+        layout.addWidget(strip)
+        self._settings_strip = strip
 
-        split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal, self)
-        split.setChildrenCollapsible(False)
-        split.setHandleWidth(8)
-        layout.addWidget(split, stretch=1)
-
-        controls_panel = QtWidgets.QWidget(split)
-        _apply_analysis_panel_style(controls_panel)
-        controls_panel.setMinimumWidth(260)
-        controls_panel.setMaximumWidth(340)
-        controls_panel_layout = QtWidgets.QVBoxLayout(controls_panel)
-        controls_panel_layout.setContentsMargins(10, 10, 10, 10)
-        controls_panel_layout.setSpacing(8)
-
-        controls = QtWidgets.QGroupBox("Settings", controls_panel)
-        _apply_analysis_group_style(controls)
-        controls_layout = QtWidgets.QFormLayout(controls)
-        controls_layout.setContentsMargins(10, 14, 10, 10)
-        controls_layout.setSpacing(6)
-
-        self._color_combo = QtWidgets.QComboBox(controls)
+        column = SettingsColumn(self, object_name="FilterRail", max_width=300)
+        column.collapseRequested.connect(lambda: self.set_settings_open(False))
+        card, card_layout = settings_card(column.content, "Nodes")
+        self._color_combo = settings_control(QtWidgets.QComboBox(card))
         self._color_combo.currentIndexChanged.connect(self._apply_style_controls)
-        controls_layout.addRow("Color nodes by", self._color_combo)
-
-        self._shape_combo = QtWidgets.QComboBox(controls)
+        stacked_field(card, card_layout, "Color nodes by", self._color_combo)
+        self._shape_combo = settings_control(QtWidgets.QComboBox(card))
         self._shape_combo.currentIndexChanged.connect(self._apply_style_controls)
-        controls_layout.addRow("Shape nodes by", self._shape_combo)
+        stacked_field(card, card_layout, "Shape nodes by", self._shape_combo)
+        column.add_card(card)
+        column.finish(min_width=248)
+        column.setFixedWidth(column.maximumWidth())
+        layout.addWidget(column)
+        self._settings_column = column
+        layout.addWidget(self._force_view, stretch=1)
 
-        controls_panel_layout.addWidget(controls, stretch=0)
-        controls_panel_layout.addStretch(1)
-
-        legend_panel = QtWidgets.QWidget(split)
-        _apply_analysis_panel_style(legend_panel)
-        legend_panel.setMinimumWidth(280)
-        legend_panel.setMaximumWidth(380)
-        legend_panel_layout = QtWidgets.QVBoxLayout(legend_panel)
-        legend_panel_layout.setContentsMargins(10, 10, 10, 10)
-        legend_panel_layout.setSpacing(8)
-
-        legend_group = QtWidgets.QGroupBox("Legend", legend_panel)
-        _apply_analysis_group_style(legend_group)
-        legend_group_layout = QtWidgets.QVBoxLayout(legend_group)
-        legend_group_layout.setContentsMargins(10, 14, 10, 10)
-        legend_group_layout.setSpacing(8)
-        self._legend_hint = QtWidgets.QLabel("Choose a color or shape grouping to see the legend.")
-        self._legend_hint.setWordWrap(True)
-        self._legend_hint.setStyleSheet("color: #607183;")
-        legend_group_layout.addWidget(self._legend_hint)
-        self._legend_scroll = QtWidgets.QScrollArea(legend_group)
-        self._legend_scroll.setWidgetResizable(True)
-        self._legend_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        self._legend_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._legend_wrap = QtWidgets.QWidget(self._legend_scroll)
-        self._legend_layout = QtWidgets.QVBoxLayout(self._legend_wrap)
-        self._legend_layout.setContentsMargins(0, 0, 0, 0)
-        self._legend_layout.setSpacing(8)
-        self._legend_scroll.setWidget(self._legend_wrap)
-        legend_group_layout.addWidget(self._legend_scroll, stretch=1)
-        legend_panel_layout.addWidget(legend_group, stretch=1)
-
-        split.addWidget(controls_panel)
-        split.addWidget(self._force_view)
-        split.addWidget(legend_panel)
-        split.setStretchFactor(0, 0)
-        split.setStretchFactor(1, 1)
-        split.setStretchFactor(2, 0)
-        split.setSizes([280, 1040, 320])
+        # Folded until the panel is shown at its size (``_fit_settings``).
+        column.hide()
+        self._settings_auto_folded = True
+        # Opened by the user in a narrow panel: it stays open there until the
+        # panel is wide enough for both (as a user's fold stands).
+        self._settings_user_opened = False
+        self._settings_fit_timer = QtCore.QTimer(self)
+        self._settings_fit_timer.setSingleShot(True)
+        self._settings_fit_timer.setInterval(0)
+        self._settings_fit_timer.timeout.connect(self._fit_settings)
 
         self._rebuild_trait_combos()
+
+    _GRAPH_MIN_WIDTH = 420
+
+    def settings_open(self) -> bool:
+        """True while the Settings column is open, False while folded."""
+        return not self._settings_column.isHidden()
+
+    def set_settings_open(self, visible: bool) -> None:
+        """Open or fold the Settings column (the header chevron or the
+        strip); the choice stands while the panel keeps its size."""
+        self._settings_auto_folded = False
+        self._settings_user_opened = bool(visible)
+        self._show_settings(bool(visible))
+
+    def _show_settings(self, visible: bool) -> None:
+        self._settings_column.setVisible(visible)
+        self._settings_strip.setVisible(not visible)
+
+    def _fit_settings(self) -> None:
+        if not self.isVisible():
+            return
+        small = self.width() < self._settings_column.width() + self._GRAPH_MIN_WIDTH
+        if not small:
+            self._settings_user_opened = False
+        elif self._settings_user_opened:
+            return
+        self._settings_auto_folded = auto_fold(
+            small, self.settings_open(), self._settings_auto_folded, self._show_settings
+        )
+
+    def showEvent(self, event: QtGui.QShowEvent) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        self._settings_fit_timer.start()
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        # Once the layout has settled at the new size.
+        self._settings_fit_timer.start()
 
     def force_view(self) -> CgmlstForceGraphView:
         return self._force_view
@@ -311,6 +146,10 @@ class CgmlstForcePlotPanel(QtWidgets.QWidget):
 
     def set_sample_filter(self, samples: Optional[Sequence[str]]) -> None:
         self._force_view.set_sample_filter(samples, refresh=False)
+        self._sample_filter = {str(s).strip() for s in samples} if samples is not None else None
+        color_trait = str(self._color_combo.currentData() or "").strip()
+        shape_trait = str(self._shape_combo.currentData() or "").strip()
+        self._force_view.set_key_sections(self._key_sections(color_trait, shape_trait))
 
     def set_fastgear_assignments(
         self,
@@ -404,6 +243,25 @@ class CgmlstForcePlotPanel(QtWidgets.QWidget):
         if combo.count() > 0:
             combo.setCurrentIndex(0)
 
+    def color_trait(self) -> str:
+        """The trait the nodes are colored by ("" for none)."""
+        return str(self._color_combo.currentData() or "").strip()
+
+    def shape_trait(self) -> str:
+        """The trait the node shapes follow ("" for none)."""
+        return str(self._shape_combo.currentData() or "").strip()
+
+    def set_style_traits(self, color: Optional[str] = None, shape: Optional[str] = None) -> None:
+        """Color and shape the nodes by these traits (None keeps the current
+        one; a trait the run does not have is ignored)."""
+        names = self._trait_names()
+        with QtCore.QSignalBlocker(self._color_combo), QtCore.QSignalBlocker(self._shape_combo):
+            if color is not None and color in names:
+                self._set_combo_value(self._color_combo, color)
+            if shape is not None and (shape in names or shape == ""):
+                self._set_combo_value(self._shape_combo, shape)
+        self._apply_style_controls()
+
     def _apply_style_controls(self) -> None:
         color_trait = str(self._color_combo.currentData() or "").strip()
         shape_trait = str(self._shape_combo.currentData() or "").strip()
@@ -413,7 +271,10 @@ class CgmlstForcePlotPanel(QtWidgets.QWidget):
             color_by_sample=color_map,
             symbol_by_sample=symbol_map,
         )
-        self._rebuild_legend_panel(color_trait, shape_trait)
+        self._force_view.set_key_sections(self._key_sections(color_trait, shape_trait))
+        if (color_trait, shape_trait) != self._style_traits:
+            self._style_traits = (color_trait, shape_trait)
+            self.styleChanged.emit()
 
     def _color_map_for_trait(self, trait_name: str) -> Dict[str, QtGui.QColor]:
         values_by_sample = self._trait_values_by_name.get(trait_name, {})
@@ -444,57 +305,36 @@ class CgmlstForcePlotPanel(QtWidgets.QWidget):
         }
 
     def _trait_counts(self, trait_name: str) -> Dict[str, int]:
+        """Samples per value, among the window's samples."""
         counts: Dict[str, int] = {}
-        for value in self._trait_values_by_name.get(trait_name, {}).values():
+        for sample, value in self._trait_values_by_name.get(trait_name, {}).items():
+            if self._sample_filter is not None and sample not in self._sample_filter:
+                continue
             text = str(value).strip()
             if not text:
                 continue
             counts[text] = counts.get(text, 0) + 1
         return counts
 
-    def _clear_legend_layout(self) -> None:
-        while self._legend_layout.count():
-            item = self._legend_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-
-    def _rebuild_legend_panel(self, color_trait: str, shape_trait: str) -> None:
-        self._clear_legend_layout()
-        has_sections = False
-
+    def _key_sections(self, color_trait: str, shape_trait: str) -> List[Tuple[str, List[GraphKeyEntry]]]:
+        """The graph key: the color and the shape of each value, with counts."""
+        sections: List[Tuple[str, List[GraphKeyEntry]]] = []
         if color_trait:
-            color_section = _ForceLegendSection(f"Colors: {color_trait}", self._legend_wrap)
             counts = self._trait_counts(color_trait)
-            for value in sorted(self._color_by_value, key=str.casefold):
-                color_section.add_widget(
-                    _LegendSwatchRow(
-                        value,
-                        self._color_by_value[value],
-                        counts.get(value, 0),
-                        parent=color_section,
-                    )
-                )
-            color_section.add_stretch()
-            self._legend_layout.addWidget(color_section)
-            has_sections = True
-
+            sections.append((
+                f"Color: {color_trait}",
+                [
+                    GraphKeyEntry(value, counts.get(value, 0), color=self._color_by_value[value])
+                    for value in sorted(self._color_by_value, key=str.casefold)
+                ],
+            ))
         if shape_trait:
-            shape_section = _ForceLegendSection(f"Shapes: {shape_trait}", self._legend_wrap)
             counts = self._trait_counts(shape_trait)
-            for value in sorted(self._symbol_by_value, key=str.casefold):
-                shape_section.add_widget(
-                    _ShapeLegendRow(
-                        value,
-                        self._symbol_by_value[value],
-                        counts.get(value, 0),
-                        parent=shape_section,
-                    )
-                )
-            shape_section.add_stretch()
-            self._legend_layout.addWidget(shape_section)
-            has_sections = True
-
-        self._legend_hint.setVisible(not has_sections)
-        self._legend_scroll.setVisible(has_sections)
-        self._legend_layout.addStretch(1)
+            sections.append((
+                f"Shape: {shape_trait}",
+                [
+                    GraphKeyEntry(value, counts.get(value, 0), symbol=self._symbol_by_value[value])
+                    for value in sorted(self._symbol_by_value, key=str.casefold)
+                ],
+            ))
+        return sections

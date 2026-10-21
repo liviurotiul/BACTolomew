@@ -4,6 +4,7 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 import pandas as pd
@@ -148,6 +149,18 @@ def _display_base_for_cluster_key(cluster_key: str) -> str:
     return "pUnclustered"
 
 
+def plain_plasmid_name(display_name: Any) -> str:
+    """'p123 (IncFII, MOBF)' for the cluster name 'p123 | IncFII | MOBF'.
+
+    Row labels and window titles use this form, so they read as words
+    rather than as '|'-separated fields.
+    """
+    parts = [part.strip() for part in _clean_text(display_name).split("|") if part.strip()]
+    if not parts:
+        return ""
+    return f"{parts[0]} ({', '.join(parts[1:])})" if len(parts) > 1 else parts[0]
+
+
 @dataclass
 class PlasmidClusterSummary:
     key: str
@@ -209,11 +222,30 @@ class PlasmidClusterIndex:
         self.clusters: Dict[str, PlasmidClusterSummary] = {}
         self.presence_by_sample: Dict[str, Set[str]] = {}
         self.instance_to_cluster: Dict[Tuple[str, str], str] = {}
+        self._frozen = False
 
     def __bool__(self) -> bool:
         return bool(self.clusters)
 
+    def freeze(self) -> "PlasmidClusterIndex":
+        """Make the index read only (a run's shared index, window plan 4.3).
+
+        The maps become ``MappingProxyType`` views, the per-sample cluster sets
+        frozensets, and ``add_row`` raises. The cluster summaries stay plain
+        objects: readers treat them as read only.
+        """
+        if not self._frozen:
+            self.clusters = MappingProxyType(dict(self.clusters))  # type: ignore[assignment]
+            self.presence_by_sample = MappingProxyType(  # type: ignore[assignment]
+                {sample: frozenset(keys) for sample, keys in self.presence_by_sample.items()}
+            )
+            self.instance_to_cluster = MappingProxyType(dict(self.instance_to_cluster))  # type: ignore[assignment]
+            self._frozen = True
+        return self
+
     def add_row(self, row: Mapping[str, Any]) -> None:
+        if self._frozen:
+            raise RuntimeError("PlasmidClusterIndex is frozen (read only).")
         sample = _clean_text(row.get("Sample"))
         cluster_key = plasmid_cluster_key_from_row(row)
         if not sample or not cluster_key:
@@ -398,7 +430,7 @@ def _gene_key(row: Mapping[str, Any]) -> str:
 
 def _gene_color(row: Mapping[str, Any]) -> str:
     tags = _clean_text(row.get("Tags"))
-    if "A" in tags:
+    if "A" in tags or "X" in tags:  # X: resistance mutation, drawn as AMR
         return "#ef9a9a"
     if "B" in tags:
         return "#a5d6a7"
@@ -556,14 +588,18 @@ def build_plasmid_representative_context_rows(
         summary = index.clusters.get(cluster_key)
         tooltip = index.tooltip_for_cluster(cluster_key)
         tooltip += f"\nRepresentative: {representative['sample']}"
+        plain_name = plain_plasmid_name(index.display_name_for_cluster(cluster_key))
         out_rows.append(
             {
                 "sample": representative["sample"],
                 "contig": representative.get("instance_key") or cluster_key,
-                "display_label": index.display_name_for_cluster(cluster_key),
-                "title": index.display_name_for_cluster(cluster_key),
+                "display_label": f"{representative['sample']}, plasmid {plain_name}",
+                "title": f"{representative['sample']}, plasmid {plain_name}",
                 "molecule": "plasmid",
                 "is_plasmid": True,
+                # Gene positions are offsets into the plasmid's contigs joined
+                # end to end, not contig coordinates.
+                "joined_contigs": True,
                 "meta_tooltip": tooltip,
                 "cluster_key": cluster_key,
                 "prevalence": summary.prevalence if summary is not None else 1,
@@ -602,7 +638,7 @@ def build_plasmid_cluster_context_rows(
         return []
 
     rows: List[Dict[str, Any]] = []
-    display_name = index.display_name_for_cluster(cluster_key)
+    display_name = plain_plasmid_name(index.display_name_for_cluster(cluster_key))
     for (sample, instance_key), group in df.groupby(["Sample", "__plasmid_instance_key"], dropna=False):
         sample = _clean_text(sample)
         instance_key = _clean_text(instance_key)
@@ -615,10 +651,13 @@ def build_plasmid_cluster_context_rows(
             {
                 "sample": sample,
                 "contig": instance_key or cluster_key,
-                "display_label": f"{sample} | {display_name}",
-                "title": f"{sample} | {display_name}",
+                "display_label": f"{sample}, plasmid {display_name}",
+                "title": f"{sample}, plasmid {display_name}",
                 "molecule": "plasmid",
                 "is_plasmid": True,
+                # Gene positions are offsets into the plasmid's contigs joined
+                # end to end, not contig coordinates.
+                "joined_contigs": True,
                 "meta_tooltip": index.tooltip_for_cluster(cluster_key),
                 "cluster_key": cluster_key,
                 "genes": genes,

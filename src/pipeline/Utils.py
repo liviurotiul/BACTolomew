@@ -15,8 +15,7 @@ cat_specs_no_other = [
     ("plus-AMR", "#c62828"),
     ("core-BMRG", "#1b5e20"),
     ("plus-BMRG", "#1b5e20"),
-    ("plus-VIRULENCE", "#6a1b9a"),
-    ("COG", "#9e9e9e")
+    ("plus-VIRULENCE", "#6a1b9a")
 ]
 
 cat_specs = [
@@ -34,7 +33,6 @@ cat_specs = [
     ("core-BMRG", "#1b5e20"),
     ("plus-BMRG", "#1b5e20"),
     ("plus-VIRULENCE", "#6a1b9a"),
-    ("COG", "#9e9e9e"),
     ("OTHER", "#9e9e9e")
 ]
 
@@ -53,37 +51,7 @@ cat_priority = {
     "EFFLUX": 9,
     "COMPOUND": 10,
     "MULTIPLE": 11,
-    "COG": 12,
-    "OTHER": 13,
-}
-
-COG_DEFINITIONS = {
-    "J": "Translation, ribosomal structure and biogenesis",
-    "A": "RNA processing and modification",
-    "K": "Transcription",
-    "L": "Replication, recombination and repair",
-    "B": "Chromatin structure and dynamics",
-    "D": "Cell cycle control, cell division, chromosome partitioning",
-    "Y": "Nuclear structure",
-    "V": "Defense mechanisms",
-    "T": "Signal transduction mechanisms",
-    "M": "Cell wall/membrane/envelope biogenesis",
-    "N": "Cell motility",
-    "Z": "Cytoskeleton",
-    "W": "Extracellular structures",
-    "U": "Intracellular trafficking, secretion, and vesicular transport",
-    "O": "Posttranslational modification, protein turnover, chaperones",
-    "X": "Mobilome: prophages, transposons",
-    "C": "Energy production and conversion",
-    "G": "Carbohydrate transport and metabolism",
-    "E": "Amino acid transport and metabolism",
-    "F": "Nucleotide transport and metabolism",
-    "H": "Coenzyme transport and metabolism",
-    "I": "Lipid transport and metabolism",
-    "P": "Inorganic ion transport and metabolism",
-    "Q": "Secondary metabolites biosynthesis, transport and catabolism",
-    "R": "General function prediction only",
-    "S": "Function unknown",
+    "OTHER": 12,
 }
 
 CATEGORIES = [cat[0] for cat in cat_specs]

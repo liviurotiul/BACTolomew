@@ -4,7 +4,7 @@ import json
 import shutil
 import subprocess
 import tempfile
-import traceback
+import threading
 from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -13,8 +13,19 @@ import numpy as np
 import pandas as pd
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from pipeline.BaktaEvidence import KEYWORD_METHOD
+
 from .constants import PLASMID_TRUE_VALUES
-from .igv_collection_view import IgvCollectionDialog
+from .shell.commands import PANEL_OPEN_ALIGNMENT, WINDOW_OPEN_NEIGHBOURHOOD
+from .resistance_mutation import (
+    MUTATION_BADGE_SVG,
+    MUTATION_TAG,
+    has_resistance_mutation,
+    mutation_note,
+    resistance_mutations,
+)
+from .theme import COLORS
+from .windows.info_window import InfoWindow
 
 _HIDDEN_INTERNAL_MARKER_FIELDS = {
     "SubjectIdentifier",
@@ -58,6 +69,11 @@ def _normalize_detail_value(value: Any) -> Any:
     except Exception:
         pass
     return value
+
+
+def normalize_detail_row(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """A gene row from the neighborhood viewer, as plain values for a gene card."""
+    return {str(k): _normalize_detail_value(v) for k, v in dict(payload or {}).items()}
 
 
 def _safe_value(value: Any) -> str:
@@ -109,46 +125,6 @@ def _parse_pasted_sequence(text: str) -> str:
     return _clean_sequence_text("".join(lines))
 
 
-def _show_floating_dialog(
-    owner_store: List[QtWidgets.QDialog],
-    dlg: QtWidgets.QDialog,
-) -> None:
-    dlg.setWindowModality(QtCore.Qt.WindowModality.NonModal)
-    dlg.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
-    owner_store.append(dlg)
-
-    def _cleanup(*_args: object, _dlg: QtWidgets.QDialog = dlg) -> None:
-        if _dlg in owner_store:
-            owner_store.remove(_dlg)
-
-    dlg.destroyed.connect(_cleanup)
-    dlg.show()
-    dlg.raise_()
-    dlg.activateWindow()
-
-
-class _ContextCollectionSignals(QtCore.QObject):
-    finished = QtCore.pyqtSignal(int, object)
-    failed = QtCore.pyqtSignal(int, str)
-
-
-class _ContextCollectionWorker(QtCore.QRunnable):
-    def __init__(self, token: int, compute: Callable[[], List[Dict[str, Any]]]) -> None:
-        super().__init__()
-        self._token = int(token)
-        self._compute = compute
-        self.signals = _ContextCollectionSignals()
-        self.setAutoDelete(True)
-
-    def run(self) -> None:
-        try:
-            rows = self._compute()
-        except Exception:
-            self.signals.failed.emit(self._token, traceback.format_exc())
-            return
-        self.signals.finished.emit(self._token, rows)
-
-
 class ZoomableAlignmentTable(QtWidgets.QTableWidget):
     zoomRequested = QtCore.pyqtSignal(int)
 
@@ -181,7 +157,20 @@ class ZoomableAlignmentTable(QtWidgets.QTableWidget):
         super().wheelEvent(event)
 
 
-class AlignmentResultDialog(QtWidgets.QDialog):
+class AlignmentView(QtWidgets.QWidget):
+    """A gene card's alignment result: the sequence names beside the aligned
+    residues, with a consensus row. The body of the ``AlignmentPanel`` of an
+    explore window (``panel_mode=True``).
+
+    ``sample_hover_callback`` gets the sample of the hovered row (None when
+    the pointer leaves). In a panel the rows follow the window's sample set
+    (``set_sample_scope``; the consensus is that of the whole alignment) and
+    rows of samples hovered elsewhere are tinted (``set_linked_samples``).
+    """
+
+    # The Close button (the dialog closes; a panel has its tab's close button).
+    closeRequested = QtCore.pyqtSignal()
+
     def __init__(
         self,
         parent: Optional[QtWidgets.QWidget],
@@ -189,10 +178,17 @@ class AlignmentResultDialog(QtWidgets.QDialog):
         alignment_text: str,
         status_text: str,
         sample_hover_callback: Optional[Callable[[Optional[str]], None]] = None,
+        panel_mode: bool = False,
     ) -> None:
         super().__init__(parent)
         self._alignment_text = alignment_text
         self._sample_hover_callback = sample_hover_callback
+        self._panel_mode = bool(panel_mode)
+        self._scope_samples: Optional[frozenset] = None
+        self._linked_samples: frozenset = frozenset()
+        # Sequence names carry each sample as _safe_header_part wrote it;
+        # the window's own names, by that form, for hovering out.
+        self._window_names: Dict[str, str] = {}
         self._syncing_scroll = False
         self._col_size = 22
         self._row_height = 22
@@ -213,8 +209,6 @@ class AlignmentResultDialog(QtWidgets.QDialog):
         self._row_stretch_timer.setInterval(60)
         self._row_stretch_timer.timeout.connect(self._stretch_rows_to_fill_viewport)
         self._last_applied_col_size = self._col_size
-        self.setWindowTitle("Alignment Result")
-        self.resize(1200, 560)
         self._build_ui(status_text)
 
     def _build_ui(self, status_text: str) -> None:
@@ -251,12 +245,64 @@ class AlignmentResultDialog(QtWidgets.QDialog):
         btn_row.addStretch(1)
         save_btn = QtWidgets.QPushButton("Save FASTA")
         save_btn.clicked.connect(self._save_alignment)
-        close_btn = QtWidgets.QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
         btn_row.addWidget(save_btn)
-        btn_row.addWidget(close_btn)
+        if not self._panel_mode:
+            close_btn = QtWidgets.QPushButton("Close")
+            close_btn.clicked.connect(self.closeRequested.emit)
+            btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
-        self.adjustSize()
+
+    def alignment_text(self) -> str:
+        return self._alignment_text
+
+    def row_samples(self) -> List[Optional[str]]:
+        """The sample of each row (None for the consensus and wild type rows)."""
+        return list(self._row_samples)
+
+    def set_sample_scope(self, samples: Optional[Sequence[str]]) -> None:
+        """Show only the rows of ``samples`` (the window's sample set; None
+        shows every row). Rows without a sample (consensus, wild type) stay."""
+        scope = self._header_forms(samples) if samples is not None else None
+        if scope == self._scope_samples:
+            return
+        self._scope_samples = scope
+        for row, sample in enumerate(self._row_samples):
+            hidden = scope is not None and sample is not None and sample not in scope
+            for table in (self._info_table, self._seq_table):
+                if table is not None:
+                    table.setRowHidden(row, hidden)
+        self._schedule_row_stretch()
+
+    def is_row_shown(self, row: int) -> bool:
+        table = self._info_table
+        return table is not None and 0 <= row < table.rowCount() and not table.isRowHidden(row)
+
+    def set_linked_samples(self, samples: Optional[Sequence[str]]) -> None:
+        """Tint the name cells of rows whose sample is hovered elsewhere."""
+        linked = self._header_forms(samples)
+        if linked == self._linked_samples or self._info_table is None:
+            return
+        self._linked_samples = linked
+        tint = QtGui.QBrush(QtGui.QColor(COLORS["primary_soft"]))
+        for row, sample in enumerate(self._row_samples):
+            item = self._info_table.item(row, 0)
+            if item is not None:
+                item.setBackground(tint if sample is not None and sample in linked else QtGui.QBrush())
+
+    def _header_forms(self, samples: Optional[Sequence[str]]) -> frozenset:
+        """``samples`` as the sequence names spell them (special characters
+        become '_'), so 'ST492 isolate#1' finds its row 'ST492_isolate_1'."""
+        forms = set()
+        for sample in samples or ():
+            raw = str(sample).strip()
+            form = _safe_header_part(raw)
+            if form:
+                forms.add(form)
+                self._window_names.setdefault(form, raw)
+        return frozenset(forms)
+
+    def linked_rows(self) -> List[int]:
+        return [row for row, sample in enumerate(self._row_samples) if sample is not None and sample in self._linked_samples]
 
     def _parse_fasta_alignment(self, text: str) -> List[Tuple[str, str]]:
         records: List[Tuple[str, str]] = []
@@ -573,7 +619,8 @@ class AlignmentResultDialog(QtWidgets.QDialog):
             return
 
         # Only stretch upward when there is extra room; keep current baseline otherwise.
-        fill_row_h = max(self._row_height, int(viewport_h / self._row_count))
+        shown = sum(1 for row in range(self._row_count) if not self._info_table.isRowHidden(row)) or 1
+        fill_row_h = max(self._row_height, int(viewport_h / shown))
         fill_row_h = min(64, fill_row_h)
         for row in range(self._row_count):
             self._info_table.setRowHeight(row, fill_row_h)
@@ -643,11 +690,8 @@ class AlignmentResultDialog(QtWidgets.QDialog):
             return
         self._hovered_sample = sample
         if self._sample_hover_callback is not None:
-            self._sample_hover_callback(sample)
-
-    def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # type: ignore[override]
-        self._set_hover_sample(None)
-        super().closeEvent(event)
+            # The window's spelling of the sample, when it is known.
+            self._sample_hover_callback(self._window_names.get(sample, sample) if sample else sample)
 
     def _save_alignment(self) -> None:
         dest, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -666,19 +710,22 @@ class AlignmentResultDialog(QtWidgets.QDialog):
 
 
 class GeneCardAlignmentDialog(QtWidgets.QDialog):
+    """The gene card's alignment parameter form (attached to the card). The
+    result goes to ``on_result(alignment_text, status_text)``; the card shows
+    it in its owner explore window."""
+
     def __init__(
         self,
         parent: Optional[QtWidgets.QWidget],
         *,
         row_data: Dict[str, Any],
         ann_df: Optional[pd.DataFrame],
-        sample_hover_callback: Optional[Callable[[Optional[str]], None]] = None,
+        on_result: Optional[Callable[[str, str], None]] = None,
     ) -> None:
         super().__init__(parent)
         self._row_data = row_data
         self._ann_df = ann_df
-        self._sample_hover_callback = sample_hover_callback
-        self._floating_dialogs: List[QtWidgets.QDialog] = []
+        self._on_result = on_result
         self.setWindowTitle("Align Sequences")
         self.resize(680, 420)
         self._build_ui()
@@ -855,16 +902,19 @@ class GeneCardAlignmentDialog(QtWidgets.QDialog):
 
         alignment_text, status = self._perform_alignment(records)
         self.status_label.setText(f"{status} ({len(records)} sequences)")
-        dlg = AlignmentResultDialog(
-            None,
-            alignment_text=alignment_text,
-            status_text=status,
-            sample_hover_callback=self._sample_hover_callback,
-        )
-        _show_floating_dialog(self._floating_dialogs, dlg)
+        if self._on_result is not None:
+            self._on_result(alignment_text, status)
 
 
-class AnnotationDetailDialog(QtWidgets.QDialog):
+class AnnotationDetailDialog(InfoWindow):
+    """The gene card (an info window, plan section 5). It keeps its actions,
+    which run as commands on its owner explore window: Compare neighborhoods
+    opens the neighborhood viewer in a new explore window with the owner's
+    filters, Align shows the parameter form and then the result in the owner
+    (with the result's sample hover in that window)."""
+
+    COMMANDS = (WINDOW_OPEN_NEIGHBOURHOOD, PANEL_OPEN_ALIGNMENT)
+
     def __init__(
         self,
         parent: Optional[QtWidgets.QWidget],
@@ -873,10 +923,6 @@ class AnnotationDetailDialog(QtWidgets.QDialog):
         ann_df: Optional[pd.DataFrame] = None,
         meta_df: Optional[pd.DataFrame] = None,
         marker_hits_df: Optional[pd.DataFrame] = None,
-        output_dir: Optional[Path] = None,
-        pan_reference_sample: Optional[str] = None,
-        pan_fallback_tree: Optional[Path] = None,
-        sample_hover_callback: Optional[Callable[[Optional[str]], None]] = None,
     ) -> None:
         super().__init__(parent)
         self._row_data = row_data
@@ -884,15 +930,13 @@ class AnnotationDetailDialog(QtWidgets.QDialog):
         self._ann_df = ann_df
         self._meta_df = meta_df if meta_df is not None else pd.DataFrame()
         self._marker_hits_df = marker_hits_df if marker_hits_df is not None else pd.DataFrame()
-        self._output_dir = Path(output_dir) if output_dir is not None else None
-        self._pan_reference_sample = str(pan_reference_sample).strip() if pan_reference_sample else None
-        self._pan_fallback_tree = Path(pan_fallback_tree) if pan_fallback_tree is not None else None
-        self._sample_hover_callback = sample_hover_callback
-        self._descriptor_labels: List[QtWidgets.QLabel] = []
-        self._floating_dialogs: List[QtWidgets.QDialog] = []
-        self._context_request_token = 0
-        self._context_worker: Optional[_ContextCollectionWorker] = None
-        self._context_progress: Optional[QtWidgets.QProgressDialog] = None
+        self._alignment_form: Optional[GeneCardAlignmentDialog] = None
+        self._sequence_edits: List[QtWidgets.QLineEdit] = []
+        self._marker_table: Optional[QtWidgets.QTableWidget] = None
+        self._raw_editor: Optional[QtWidgets.QPlainTextEdit] = None
+        # One collection at a time over this card's lookup caches (they are
+        # filled lazily, on a worker thread).
+        self._context_rows_lock = threading.Lock()
         self._ann_sample_norm_cache: Optional[pd.Series] = None
         self._ann_contig_norm_cache: Optional[pd.Series] = None
         self._ann_gene_norm_cache: Optional[pd.Series] = None
@@ -901,99 +945,386 @@ class AnnotationDetailDialog(QtWidgets.QDialog):
         self._ann_stop_num_cache: Optional[pd.Series] = None
         self._context_contig_cache: Dict[Tuple[str, str], pd.DataFrame] = {}
         self._sample_metadata_cache: Dict[str, Dict[str, str]] = {}
-        self.setWindowTitle("Annotation details")
-        self.resize(820, 620)
+        gene = _safe_value(self._row_data.get("Gene")) or "Unnamed annotation"
+        self.setObjectName("AnnotationDetailDialog")
+        self.set_card_title(f"Gene annotation: {gene}")
+        self.setMinimumSize(720, 540)
+        self.resize(920, 700)
         self._build_ui()
 
     def _build_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 14)
+        layout.setSpacing(12)
+
+        layout.addWidget(self._build_hero())
 
         tabs = QtWidgets.QTabWidget()
-        tabs.addTab(self._build_summary_tab(), "Summary")
-        tabs.addTab(self._build_raw_tab(), "Raw")
-        layout.addWidget(tabs)
+        tabs.setObjectName("AnnotationDetailTabs")
+        tabs.setDocumentMode(True)
+        tabs.addTab(self._build_summary_tab(), "Overview")
+        tabs.addTab(self._build_raw_tab(), "All fields")
+        self._tabs = tabs
+        layout.addWidget(tabs, stretch=1)
 
         btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
-        context_btn = btns.addButton("Context", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole)
-        align_btn = btns.addButton("Align", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole)
+        btns.setObjectName("AnnotationActionButtons")
+        context_btn = btns.addButton(
+            "Compare neighborhoods…",
+            QtWidgets.QDialogButtonBox.ButtonRole.ActionRole,
+        )
+        context_btn.setProperty("role", "primary")
+        context_btn.setToolTip(
+            "Compare this gene with matching neighborhoods across samples, "
+            "in a new explore window with this window's filters"
+        )
+        align_btn = btns.addButton(
+            "Align sequences…",
+            QtWidgets.QDialogButtonBox.ButtonRole.ActionRole,
+        )
+        align_btn.setToolTip("Align this protein with matching available sequences")
+        self._context_button = context_btn
+        self._align_button = align_btn
         context_btn.clicked.connect(self._open_context_dialog)
         align_btn.clicked.connect(self._open_alignment_dialog)
+        self._update_action_buttons()
         btns.rejected.connect(self.reject)
         btns.accepted.connect(self.accept)
-        layout.addWidget(btns)
+
+        actions = QtWidgets.QFrame()
+        actions.setObjectName("AnnotationActions")
+        actions_layout = QtWidgets.QHBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 11, 0, 0)
+        actions_layout.setSpacing(10)
+        action_hint = QtWidgets.QLabel("Explore this annotation")
+        action_hint.setProperty("role", "annotationActionHint")
+        actions_layout.addWidget(action_hint)
+        actions_layout.addStretch(1)
+        actions_layout.addWidget(btns)
+        layout.addWidget(actions)
+
+    def _build_hero(self) -> QtWidgets.QFrame:
+        hero = QtWidgets.QFrame()
+        hero.setObjectName("AnnotationHero")
+        layout = QtWidgets.QVBoxLayout(hero)
+        layout.setContentsMargins(18, 15, 18, 15)
+        layout.setSpacing(5)
+
+        eyebrow = QtWidgets.QLabel("GENE ANNOTATION")
+        eyebrow.setProperty("role", "annotationEyebrow")
+        layout.addWidget(eyebrow)
+
+        gene = _safe_value(self._row_data.get("Gene")) or "Unnamed annotation"
+        title = QtWidgets.QLabel(gene)
+        title.setObjectName("AnnotationTitle")
+        title.setProperty("role", "annotationTitle")
+        title.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(title)
+
+        product = _safe_value(self._row_data.get("Product")) or "No product description available"
+        product_label = QtWidgets.QLabel(product)
+        product_label.setObjectName("AnnotationProduct")
+        product_label.setProperty("role", "annotationProduct")
+        product_label.setWordWrap(True)
+        product_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(product_label)
+
+        sample = _safe_value(self._row_data.get("Sample")) or "Unknown sample"
+        contig_raw = _safe_value(self._row_data.get("Contig")) or "Unknown contig"
+        contig = contig_raw if contig_raw.lower().startswith("contig") else f"Contig {contig_raw}"
+        source = QtWidgets.QLabel(f"{sample}  •  {contig}")
+        source.setProperty("role", "annotationSource")
+        source.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(source)
+
+        badges = self._annotation_badges()
+        if badges:
+            badge_wrap = QtWidgets.QWidget()
+            badge_layout = QtWidgets.QHBoxLayout(badge_wrap)
+            badge_layout.setContentsMargins(0, 5, 0, 0)
+            badge_layout.setSpacing(6)
+            for text, variant, tooltip in badges:
+                badge_layout.addWidget(self._make_annotation_badge(text, variant, tooltip))
+            badge_layout.addStretch(1)
+            layout.addWidget(badge_wrap)
+        return hero
+
+    def _annotation_badges(self) -> List[Tuple[str, str, str]]:
+        badges: List[Tuple[str, str, str]] = []
+        position = self._format_position()
+        if position:
+            badges.append((position, "fact", "Genomic coordinates"))
+        orientation = self._format_orientation()
+        if orientation:
+            badges.append((orientation, "fact", "Gene orientation"))
+        annotation_id = _safe_value(self._row_data.get("AnnotationID"))
+        if annotation_id:
+            badges.append((annotation_id, "identifier", "Annotation ID"))
+
+        tag_labels = {
+            "A": ("AMR", "amr"),
+            "B": ("BMRG", "bmrg"),
+            "V": ("Virulence", "virulence"),
+            "M": ("Mobile", "mobile"),
+            "P": ("Phage", "phage"),
+            "I": ("Overlap", "overlap"),
+            MUTATION_TAG: ("Resistance mutation", "amr"),
+        }
+        tag_text = _safe_value(self._row_data.get("Tags")).upper()
+        # A tag from a keyword in Bakta's product (Mobile, Phage) says so.
+        by_name = _safe_value(self._row_data.get("ConsensusSource")) == KEYWORD_METHOD
+        for token, (label, variant) in tag_labels.items():
+            if token in tag_text:
+                tooltip = mutation_note(self._row_data) if token == MUTATION_TAG else ""
+                if not tooltip and by_name and token in "MP":
+                    tooltip = f"Annotation tag: {label}, from the Bakta product name (not a database search)"
+                badges.append((label, variant, tooltip or f"Annotation tag: {label}"))
+
+        predictor_text = _safe_value(self._row_data.get("Predictors"))
+        predictors: List[str] = []
+        for raw in predictor_text.replace(";", ",").split(","):
+            predictor = raw.strip()
+            if predictor and predictor not in predictors:
+                predictors.append(predictor)
+        for predictor in predictors:
+            badges.append((predictor, "predictor", f"Predictor: {predictor}"))
+
+        max_badges = 7
+        if len(badges) > max_badges:
+            hidden = badges[max_badges - 1 :]
+            hidden_names = ", ".join(text for text, _variant, _tooltip in hidden)
+            badges = badges[: max_badges - 1] + [
+                (f"+{len(hidden)} more", "more", hidden_names)
+            ]
+        return badges
+
+    @staticmethod
+    def _make_annotation_badge(text: str, variant: str, tooltip: str) -> QtWidgets.QLabel:
+        label = QtWidgets.QLabel(text)
+        label.setProperty("role", "annotationChip")
+        label.setProperty("variant", variant)
+        label.setToolTip(tooltip or text)
+        return label
+
+    @staticmethod
+    def _build_section_card(
+        title: str,
+        summary: str = "",
+    ) -> Tuple[QtWidgets.QFrame, QtWidgets.QVBoxLayout]:
+        card = QtWidgets.QFrame()
+        card.setObjectName("AnnotationCard")
+        card_layout = QtWidgets.QVBoxLayout(card)
+        card_layout.setContentsMargins(15, 13, 15, 14)
+        card_layout.setSpacing(10)
+
+        heading_layout = QtWidgets.QHBoxLayout()
+        heading_layout.setContentsMargins(0, 0, 0, 0)
+        heading_layout.setSpacing(8)
+        heading = QtWidgets.QLabel(title)
+        heading.setProperty("role", "annotationSectionTitle")
+        heading_layout.addWidget(heading)
+        heading_layout.addStretch(1)
+        if summary:
+            meta = QtWidgets.QLabel(summary)
+            meta.setProperty("role", "annotationSectionMeta")
+            heading_layout.addWidget(meta)
+        card_layout.addLayout(heading_layout)
+        return card, card_layout
+
+    @staticmethod
+    def _build_detail_field(label_text: str, value_text: str) -> QtWidgets.QWidget:
+        field = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(field)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
+        label = QtWidgets.QLabel(label_text)
+        label.setProperty("role", "annotationFieldLabel")
+        value = QtWidgets.QLabel(value_text or "-")
+        value.setProperty("role", "annotationFieldValue")
+        value.setWordWrap(True)
+        value.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(label)
+        layout.addWidget(value)
+        return field
+
+    def _build_detail_grid(self, fields: Sequence[Tuple[str, str]]) -> QtWidgets.QWidget:
+        grid_widget = QtWidgets.QWidget()
+        grid = QtWidgets.QGridLayout(grid_widget)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(28)
+        grid.setVerticalSpacing(12)
+        for index, (label, value) in enumerate(fields):
+            grid.addWidget(self._build_detail_field(label, value), index // 2, index % 2)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        return grid_widget
 
     def _build_summary_tab(self) -> QtWidgets.QWidget:
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(widget)
+        page = QtWidgets.QWidget()
+        page_layout = QtWidgets.QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
 
-        header = QtWidgets.QLabel(self._format_header())
-        header.setWordWrap(True)
-        header.setStyleSheet("font-weight: 600;")
-        layout.addWidget(header)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setObjectName("AnnotationSummaryScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        pos_group = QtWidgets.QGroupBox("Position")
-        pos_layout = QtWidgets.QFormLayout(pos_group)
-        pos_layout.addRow(self._make_descriptor_label("Position"), QtWidgets.QLabel(self._format_position()))
-        pos_layout.addRow(self._make_descriptor_label("Orientation"), QtWidgets.QLabel(self._format_orientation()))
-        layout.addWidget(pos_group)
+        content = QtWidgets.QWidget()
+        content.setObjectName("AnnotationSummaryContent")
+        layout = QtWidgets.QVBoxLayout(content)
+        layout.setContentsMargins(2, 10, 2, 4)
+        layout.setSpacing(10)
 
-        ids_group = QtWidgets.QGroupBox("Identifiers")
-        ids_layout = QtWidgets.QFormLayout(ids_group)
-        for label, key in [("NCBI", "NCBI_NRP_ID"), ("RefSeq", "Refseq_ID")]:
+        location_card, location_layout = self._build_section_card("Location")
+        location_fields = [
+            ("Sample", _safe_value(self._row_data.get("Sample")) or "Unknown sample"),
+            ("Contig", _safe_value(self._row_data.get("Contig")) or "Unknown contig"),
+            ("Coordinates", self._format_position()),
+            ("Strand", self._format_orientation()),
+        ]
+        location_layout.addWidget(self._build_detail_grid(location_fields))
+        layout.addWidget(location_card)
+
+        if has_resistance_mutation(self._row_data):
+            layout.addWidget(self._build_mutation_card())
+
+        identifier_fields: List[Tuple[str, str]] = []
+        for label, key in [
+            ("Annotation ID", "AnnotationID"),
+            ("NCBI protein", "NCBI_NRP_ID"),
+            ("RefSeq protein", "Refseq_ID"),
+            ("Locus", "Locus"),
+            ("Gene ID", "GeneID"),
+        ]:
             value = _safe_value(self._row_data.get(key))
             if value:
-                ids_layout.addRow(self._make_descriptor_label(label), QtWidgets.QLabel(value))
-        if ids_layout.rowCount() == 0:
-            ids_layout.addRow(self._make_descriptor_label("(none)"), QtWidgets.QLabel(""))
-        layout.addWidget(ids_group)
+                identifier_fields.append((label, value))
+        if identifier_fields:
+            ids_card, ids_layout = self._build_section_card("Identifiers")
+            ids_layout.addWidget(self._build_detail_grid(identifier_fields))
+            layout.addWidget(ids_card)
 
-        seq_group = QtWidgets.QGroupBox("Sequences")
-        seq_layout = QtWidgets.QFormLayout(seq_group)
         nt_seq = _safe_value(self._row_data.get("Nucleotide_Sequence"))
         aa_seq = _safe_value(self._row_data.get("Amino_Acid_Sequence"))
-        if nt_seq:
-            seq_layout.addRow(self._make_descriptor_label("Nucleotide"), self._build_sequence_row(nt_seq))
-        if aa_seq:
-            seq_layout.addRow(self._make_descriptor_label("Amino acid"), self._build_sequence_row(aa_seq))
-        if seq_layout.rowCount() == 0:
-            seq_layout.addRow(self._make_descriptor_label("(none)"), QtWidgets.QLabel(""))
-        layout.addWidget(seq_group)
+        if nt_seq or aa_seq:
+            seq_count = int(bool(nt_seq)) + int(bool(aa_seq))
+            seq_card, seq_layout = self._build_section_card(
+                "Sequences",
+                f"{seq_count} available",
+            )
+            if nt_seq:
+                seq_layout.addWidget(self._build_sequence_row(nt_seq, "Nucleotide", "nt"))
+            if aa_seq:
+                seq_layout.addWidget(self._build_sequence_row(aa_seq, "Amino acid", "aa"))
+            layout.addWidget(seq_card)
 
         marker_hits = self._marker_hits_for_row()
         if not marker_hits.empty:
-            markers_group = QtWidgets.QGroupBox("Markers")
-            markers_layout = QtWidgets.QVBoxLayout(markers_group)
-            table = QtWidgets.QTableWidget()
-            table.setColumnCount(5)
-            table.setHorizontalHeaderLabels(["DB", "Method", "Coverage", "Identity", "Product"])
-            table.setRowCount(len(marker_hits))
-            table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
-            table.horizontalHeader().setStretchLastSection(True)
-            table.verticalHeader().setVisible(False)
-            for row_idx, marker in enumerate(marker_hits.to_dict("records")):
-                db = str(marker.get("DB") or "")
-                method = str(marker.get("Method") or "")
-                product = str(marker.get("Product") or "")
-                coverage = marker.get("Subject_coverage") or ""
-                identity = marker.get("Identity") or ""
-                table.setItem(row_idx, 0, QtWidgets.QTableWidgetItem(db))
-                table.setItem(row_idx, 1, QtWidgets.QTableWidgetItem(method))
-                table.setItem(row_idx, 4, QtWidgets.QTableWidgetItem(product))
-                self._set_metric_cell(table, row_idx, 2, coverage, "#7bb6ff")
-                self._set_metric_cell(table, row_idx, 3, identity, "#ff8f8f")
-            table.resizeColumnsToContents()
-            markers_layout.addWidget(table)
-            layout.addWidget(markers_group)
+            marker_count = len(marker_hits)
+            marker_card, marker_layout = self._build_section_card(
+                "Marker evidence",
+                f"{marker_count} {'hit' if marker_count == 1 else 'hits'}",
+            )
+            table = self._build_marker_table(marker_hits)
+            self._marker_table = table
+            marker_layout.addWidget(table)
+            layout.addWidget(marker_card)
 
         layout.addStretch(1)
-        self._update_descriptor_widths()
-        return widget
+        scroll.setWidget(content)
+        page_layout.addWidget(scroll)
+        return page
+
+    def _build_mutation_card(self) -> QtWidgets.QFrame:
+        """AMRFinderPlus point mutations of this CDS: the badge, the note, symbols and drug classes."""
+        mutations = resistance_mutations(self._row_data)
+        card, card_layout = self._build_section_card(
+            "Resistance mutations",
+            "AMRFinderPlus",
+        )
+        note_row = QtWidgets.QHBoxLayout()
+        note_row.setContentsMargins(0, 0, 0, 0)
+        note_row.setSpacing(8)
+        icon = QtWidgets.QLabel()
+        icon.setPixmap(QtGui.QIcon(str(MUTATION_BADGE_SVG)).pixmap(QtCore.QSize(16, 16), self.devicePixelRatioF()))
+        icon.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        note_row.addWidget(icon)
+        note = QtWidgets.QLabel(mutation_note(self._row_data))
+        note.setWordWrap(True)
+        note_row.addWidget(note, stretch=1)
+        card_layout.addLayout(note_row)
+        fields = [("Mutations", ", ".join(mutations) or "Tagged X")]
+        classes = _safe_value(self._row_data.get("ResistanceMutationClasses")).replace(";", ", ")
+        if classes:
+            fields.append(("Drug classes", classes))
+        card_layout.addWidget(self._build_detail_grid(fields))
+        return card
+
+    def _build_marker_table(self, marker_hits: pd.DataFrame) -> QtWidgets.QTableWidget:
+        table = QtWidgets.QTableWidget()
+        table.setObjectName("AnnotationMarkerTable")
+        table.setColumnCount(5)
+        table.setHorizontalHeaderLabels(["DB", "Method", "Coverage", "Identity", "Product"])
+        table.setRowCount(len(marker_hits))
+        table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        table.setAlternatingRowColors(True)
+        table.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel)
+        table.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel)
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(32)
+
+        header = table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        table.setColumnWidth(2, 90)
+        table.setColumnWidth(3, 90)
+
+        for row_idx, marker in enumerate(marker_hits.to_dict("records")):
+            db = str(marker.get("DB") or "")
+            method = str(marker.get("Method") or "")
+            product = str(marker.get("Product") or "")
+            coverage = marker.get("Subject_coverage") or ""
+            identity = marker.get("Identity") or ""
+            table.setItem(row_idx, 0, QtWidgets.QTableWidgetItem(db))
+            table.setItem(row_idx, 1, QtWidgets.QTableWidgetItem(method))
+            product_item = QtWidgets.QTableWidgetItem(product)
+            product_item.setToolTip(product)
+            table.setItem(row_idx, 4, product_item)
+            self._set_metric_cell(table, row_idx, 2, coverage, "#86acee")
+            self._set_metric_cell(table, row_idx, 3, identity, "#86acee")
+
+        visible_rows = min(max(len(marker_hits), 1), 6)
+        table.setFixedHeight(42 + (visible_rows * 32))
+        return table
 
     def _build_raw_tab(self) -> QtWidgets.QWidget:
         widget = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(widget)
+        layout.setContentsMargins(2, 10, 2, 4)
+        layout.setSpacing(8)
+
+        title = QtWidgets.QLabel("Complete annotation record")
+        title.setProperty("role", "annotationSectionTitle")
+        layout.addWidget(title)
+        description = QtWidgets.QLabel(
+            "Normalized source fields and marker evidence for this annotation."
+        )
+        description.setProperty("role", "muted")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
         raw = QtWidgets.QPlainTextEdit()
+        raw.setObjectName("AnnotationRawJson")
         raw.setReadOnly(True)
+        raw.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+        raw.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont))
         normalized = {
             k: _normalize_detail_value(v)
             for k, v in self._row_data.items()
@@ -1004,7 +1335,9 @@ class AnnotationDetailDialog(QtWidgets.QDialog):
             visible_cols = [c for c in marker_hits.columns if c not in _HIDDEN_INTERNAL_MARKER_FIELDS]
             normalized["MarkerHits"] = _normalize_detail_value(marker_hits[visible_cols].to_dict("records"))
         raw.setPlainText(json.dumps(normalized, indent=2, ensure_ascii=False))
-        layout.addWidget(raw)
+        raw.setAccessibleName("Complete annotation record as JSON")
+        self._raw_editor = raw
+        layout.addWidget(raw, stretch=1)
         return widget
 
     def _format_header(self) -> str:
@@ -1033,18 +1366,51 @@ class AnnotationDetailDialog(QtWidgets.QDialog):
             return "Reverse (-)"
         return strand
 
-    def _build_sequence_row(self, seq: str) -> QtWidgets.QWidget:
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QHBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        preview = self._sequence_preview(seq)
-        label = QtWidgets.QLabel(preview)
-        label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
-        label.setToolTip(seq)
-        copy_btn = QtWidgets.QPushButton("Copy")
+    def _build_sequence_row(self, seq: str, label_text: str, unit: str) -> QtWidgets.QWidget:
+        widget = QtWidgets.QFrame()
+        widget.setObjectName("AnnotationSequenceRow")
+        layout = QtWidgets.QVBoxLayout(widget)
+        layout.setContentsMargins(10, 8, 10, 9)
+        layout.setSpacing(6)
+
+        heading_layout = QtWidgets.QHBoxLayout()
+        heading_layout.setContentsMargins(0, 0, 0, 0)
+        heading = QtWidgets.QLabel(label_text)
+        heading.setProperty("role", "annotationSequenceTitle")
+        length = QtWidgets.QLabel(f"{len(seq):,} {unit}")
+        length.setProperty("role", "annotationSequenceLength")
+        heading_layout.addWidget(heading)
+        heading_layout.addStretch(1)
+        heading_layout.addWidget(length)
+        layout.addLayout(heading_layout)
+
+        sequence_layout = QtWidgets.QHBoxLayout()
+        sequence_layout.setContentsMargins(0, 0, 0, 0)
+        sequence_layout.setSpacing(8)
+        sequence_edit = QtWidgets.QLineEdit(seq)
+        sequence_edit.setObjectName("AnnotationSequenceText")
+        sequence_edit.setReadOnly(True)
+        sequence_edit.setMinimumWidth(0)
+        sequence_edit.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        sequence_edit.setFont(
+            QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
+        )
+        sequence_edit.setCursorPosition(0)
+        sequence_edit.setAccessibleName(f"{label_text} sequence")
+        self._sequence_edits.append(sequence_edit)
+
+        copy_btn = QtWidgets.QToolButton()
+        copy_btn.setObjectName("AnnotationCopyButton")
+        copy_btn.setText("Copy")
+        copy_btn.setToolTip(f"Copy the complete {label_text.lower()} sequence")
+        copy_btn.setAccessibleName(f"Copy {label_text.lower()} sequence")
         copy_btn.clicked.connect(lambda _checked=False, s=seq: self._copy_text(s))
-        layout.addWidget(label, stretch=1)
-        layout.addWidget(copy_btn)
+        sequence_layout.addWidget(sequence_edit, stretch=1)
+        sequence_layout.addWidget(copy_btn)
+        layout.addLayout(sequence_layout)
         return widget
 
     def _sequence_preview(self, seq: str, max_len: int = 80) -> str:
@@ -1109,118 +1475,110 @@ class AnnotationDetailDialog(QtWidgets.QDialog):
         bar.setFormat(f"{metric:.1f}")
         bar.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         bar.setTextVisible(True)
+        bar.setFixedHeight(20)
         bar.setStyleSheet(
             "QProgressBar {"
-            " border: 1px solid #d3dbe6;"
-            " border-radius: 7px;"
-            " background: #f3f6fa;"
-            " color: #223246;"
+            " border: none;"
+            " border-radius: 6px;"
+            " background: #edf2f7;"
+            " color: #172434;"
             " text-align: center;"
+            " font-weight: 600;"
             "}"
-            f"QProgressBar::chunk {{ background-color: {color}; border-radius: 7px; }}"
+            f"QProgressBar::chunk {{ background-color: {color}; border-radius: 6px; }}"
         )
         table.setCellWidget(row, col, bar)
         table.setItem(row, col, QtWidgets.QTableWidgetItem(f"{metric:.1f}"))
 
-    def _make_descriptor_label(self, text: str) -> QtWidgets.QLabel:
-        label = QtWidgets.QLabel(text)
-        label.setStyleSheet("font-weight: 600; color: #2b3c4d;")
-        label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
-        self._descriptor_labels.append(label)
-        return label
+    # Owner window and actions
 
-    def _update_descriptor_widths(self) -> None:
-        if not self._descriptor_labels:
-            return
-        width = max(120, int(self.width() * 0.15))
-        for label in self._descriptor_labels:
-            label.setFixedWidth(width)
+    def menu_label(self) -> str:
+        """Names the sample and contig too: cards of one gene in several
+        samples have the same title."""
+        sample = _safe_value(self._row_data.get("Sample"))
+        contig = _safe_value(self._row_data.get("Contig"))
+        where = ", ".join(part for part in (sample, f"contig {contig}" if contig else "") if part)
+        label = f"{self.card_title()} ({where})" if where else self.card_title()
+        badge = self.owner_badge()
+        return f"{label} [{badge}]" if badge else label
 
-    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
-        super().resizeEvent(event)
-        self._update_descriptor_widths()
+    def _owner_changed(self) -> None:
+        self._update_action_buttons()
+
+    def _update_action_buttons(self) -> None:
+        """The actions need an owner explore window to show their results in."""
+        enabled = self.can_run_commands()
+        tip_off = "Open this card from an explore window to use its actions"
+        for button, tip_on in (
+            (
+                getattr(self, "_context_button", None),
+                "Compare this gene with matching neighborhoods across samples, "
+                "in a new explore window with this window's filters",
+            ),
+            (getattr(self, "_align_button", None), "Align this protein with matching available sequences"),
+        ):
+            if button is None:
+                continue
+            button.setEnabled(enabled)
+            button.setToolTip(tip_on if enabled else tip_off)
 
     def _open_alignment_dialog(self) -> None:
-        dlg = GeneCardAlignmentDialog(
-            None,
-            row_data=self._row_data,
-            ann_df=self._ann_df,
-            sample_hover_callback=self._sample_hover_callback,
+        """The parameter form, attached to this card (one at a time)."""
+        if not self.can_run_commands():
+            return  # no owner window to show the result in
+        form = self._alignment_form
+        if form is None:
+            form = GeneCardAlignmentDialog(
+                self,
+                row_data=self._row_data,
+                ann_df=self._ann_df,
+                on_result=self._show_alignment_result,
+            )
+            form.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+            form.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            form.destroyed.connect(self._forget_alignment_form)
+            self._alignment_form = form
+        form.show()
+        form.raise_()
+        form.activateWindow()
+
+    def _forget_alignment_form(self, *_args: object) -> None:
+        self._alignment_form = None
+
+    def _show_alignment_result(self, alignment_text: str, status_text: str) -> None:
+        gene = _safe_value(self._row_data.get("Gene")) or "gene"
+        self.run_command(
+            PANEL_OPEN_ALIGNMENT,
+            alignment_text=alignment_text,
+            status_text=status_text,
+            title=f"Alignment: {gene}",
         )
-        _show_floating_dialog(self._floating_dialogs, dlg)
 
     def _open_context_dialog(self) -> None:
-        if self._context_worker is not None:
-            if self._context_progress is not None:
-                self._context_progress.raise_()
-                self._context_progress.activateWindow()
-            return
-        self._context_request_token += 1
-        token = self._context_request_token
-
-        progress = QtWidgets.QProgressDialog("Loading gene context…", "", 0, 0, self)
-        progress.setWindowTitle("Context")
-        progress.setCancelButton(None)
-        progress.setMinimumDuration(0)
-        progress.setAutoClose(False)
-        progress.setAutoReset(False)
-        progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
-        progress.show()
-        progress.raise_()
-        progress.activateWindow()
-        self._context_progress = progress
-
-        worker = _ContextCollectionWorker(
-            token,
-            lambda: self._build_context_collection_rows(window_genes=15),
-        )
-        worker.signals.finished.connect(self._on_context_collection_ready)
-        worker.signals.failed.connect(self._on_context_collection_failed)
-        self._context_worker = worker
-        QtCore.QThreadPool.globalInstance().start(worker)
-
-    def _finish_context_collection_request(self, token: int) -> bool:
-        if token != self._context_request_token:
-            return False
-        self._context_worker = None
-        if self._context_progress is not None:
-            self._context_progress.close()
-            self._context_progress.deleteLater()
-            self._context_progress = None
-        return True
-
-    def _on_context_collection_ready(self, token: int, rows_obj: object) -> None:
-        if not self._finish_context_collection_request(token):
-            return
-        rows = rows_obj if isinstance(rows_obj, list) else []
-        if not rows:
-            QtWidgets.QMessageBox.information(
-                self,
-                "Context",
-                "No contexts found for this gene.",
-            )
-            return
+        """Compare neighborhoods: a neighbourhood panel in a new explore
+        window cloned from the owner's filters, busy (inline) until its rows
+        are collected on a worker thread. Asking again for the same gene shows
+        that panel (in whichever window holds it)."""
+        if not self.can_run_commands():
+            return  # no owner window to show the neighborhoods in
         gene = _safe_value(self._row_data.get("Gene")) or "gene"
-        dlg = IgvCollectionDialog(
-            None,
-            rows=rows,
-            title=f"IGV_collection - {gene}",
-            output_dir=self._output_dir,
-            pan_reference_sample=self._pan_reference_sample,
-            pan_fallback_tree=self._pan_fallback_tree,
+        self.run_command(
+            WINDOW_OPEN_NEIGHBOURHOOD,
+            # Load the largest supported neighborhood once; the panel can then
+            # switch between ±5/±10/±15/±30 genes without another scan.
+            loader=self._collect_context_rows,
+            title=f"Gene neighborhoods: {gene}",
+            source="gene_card",
+            key=("gene", self.info_key()) if self.info_key() is not None else None,
+            reference_sample=_safe_value(self._row_data.get("Sample")),
+            flank_sizes=(5, 10, 15, 30),
+            initial_flank=15,
         )
-        dlg.geneDoubleClicked.connect(self._open_collection_gene_card)
-        _show_floating_dialog(self._floating_dialogs, dlg)
 
-    def _on_context_collection_failed(self, token: int, error_text: str) -> None:
-        if not self._finish_context_collection_request(token):
-            return
-        QtWidgets.QMessageBox.warning(
-            self,
-            "Context",
-            "Failed to build the gene context view.\n\n"
-            f"{error_text.strip().splitlines()[-1] if error_text.strip() else 'Unknown error.'}",
-        )
+    def _collect_context_rows(self) -> List[Dict[str, Any]]:
+        """The Compare neighborhoods loader (runs on a worker thread)."""
+        with self._context_rows_lock:
+            return self._build_context_collection_rows(window_genes=30)
 
     def _ensure_context_lookup_caches(self) -> bool:
         df = self._ann_df
@@ -1406,18 +1764,30 @@ class AnnotationDetailDialog(QtWidgets.QDialog):
                 and center_stop == int(stop_key)
             )
             sample_meta = self._sample_metadata_map(sample)
-            is_plasmid = str(center_row.get("MobSuiteIsPlasmid") or "").strip().lower() in PLASMID_TRUE_VALUES
+            plasmid_call = _safe_value(center_row.get("MobSuiteIsPlasmid")).lower()
+            if plasmid_call in {"<na>", "none", "null", "-"}:
+                plasmid_call = ""
+            is_plasmid = plasmid_call in PLASMID_TRUE_VALUES
+            # Without a MOB-suite call the molecule type is unknown, not
+            # chromosome.
+            molecule = "plasmid" if is_plasmid else "chromosome" if plasmid_call else "unknown"
+            contig_label = contig if contig.lower().startswith("contig") else f"contig {contig}"
             row_payload = {
-                "title": f"{sample} | {contig}",
+                "title": f"{sample}, {contig_label}",
                 "sample": sample,
                 "contig": contig,
-                "molecule": "plasmid" if is_plasmid else "chromosome",
+                "molecule": molecule,
                 "is_plasmid": is_plasmid,
                 "is_source": is_source,
                 "sample_meta": sample_meta,
                 "meta_tooltip": self._sample_metadata_tooltip(sample, contig, sample_meta),
                 "center_bp": center_bp,
                 "genes": genes,
+                # Genes the contig holds on each side of the focal gene, so the
+                # comparison can tell 'the contig ends here' from 'nothing
+                # similar here' at any flank.
+                "contig_genes_before": int(hit_idx),
+                "contig_genes_after": int(len(contig_df) - 1 - hit_idx),
             }
             rows.append((0 if is_source else 1, row_payload))
 
@@ -1446,7 +1816,7 @@ class AnnotationDetailDialog(QtWidgets.QDialog):
     @staticmethod
     def _igv_like_color(tags: str) -> str:
         value = str(tags or "")
-        if "A" in value:
+        if "A" in value or MUTATION_TAG in value:
             return "#ef9a9a"
         if "B" in value:
             return "#a5d6a7"
@@ -1492,21 +1862,3 @@ class AnnotationDetailDialog(QtWidgets.QDialog):
         if not details:
             return "\n".join(header)
         return "\n".join(header + [""] + details)
-
-    def _open_collection_gene_card(self, payload: Dict[str, Any]) -> None:
-        if not payload:
-            return
-        row_data = {str(k): _normalize_detail_value(v) for k, v in dict(payload).items()}
-        dlg = AnnotationDetailDialog(
-            None,
-            row_data,
-            list(row_data.keys()),
-            ann_df=self._ann_df,
-            meta_df=self._meta_df,
-            marker_hits_df=self._marker_hits_df,
-            output_dir=self._output_dir,
-            pan_reference_sample=self._pan_reference_sample,
-            pan_fallback_tree=self._pan_fallback_tree,
-            sample_hover_callback=self._sample_hover_callback,
-        )
-        _show_floating_dialog(self._floating_dialogs, dlg)

@@ -1,0 +1,25 @@
+# Qt-free host dependencies of BACTolomew: the pipeline orchestration, the
+# headless commands (setup, run, check) and the data loading the GUI builds on.
+# The bioinformatics tools run in the container image (docker/Dockerfile) and
+# are not installed here.
+#
+# Every dependency has a lower bound (oldest version known to work with
+# NumPy 2) and an upper bound below the next major release, which has not
+# been tested yet. Supported Python: 3.10 to 3.14 (see README).
+#
+# install.sh installs the pinned versions from requirements-pipeline.lock
+# (headless) or requirements.lock (GUI); regenerate both with
+# tools/lock_deps.sh after changing a bound here. tools/check_latest_deps.sh
+# tries the newest releases (also past these bounds) in a throwaway venv.
+
+numpy>=2.0,<3
+pandas>=2.2.2,<4
+# polars 2.0 is fine. The test suite segfaults first seen with it were two
+# PyQt object lifetime bugs in our code that its different timing exposed
+# (fixed in theme.py and explorer_ui.py), not polars bugs.
+polars>=1.36,<3
+# pyarrow 25+ needs NumPy 2 at run time without saying so in its metadata,
+# so the numpy bound above must stay at 2 or newer.
+pyarrow>=16,<27
+scipy>=1.13,<2
+biopython>=1.84,<2

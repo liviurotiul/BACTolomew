@@ -10,7 +10,7 @@ import sys
 from typing import Dict, List, Optional, Sequence
 import unicodedata
 
-from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtWidgets
 from .constants import COUNTRY_ALIASES
 
 
@@ -689,10 +689,14 @@ def _maplibre_html(country_geojson_name: str, country_aliases_json: str) -> str:
 class GeoMapLibreView(QtWidgets.QWidget):
     """Geo-panel map container: the MapLibre GL web map when a GPU/WebEngine is
     available, otherwise the offline SVG choropleth. Same API the panel expects:
-    update_data(points, countries, max_count) + highlight_sample(s).
+    update_data(points, countries, max_count) + highlight_sample(s), and
+    countryHovered(key): the normalized name of the country with samples under
+    the pointer in the active map ("" for none), relayed from the backend.
 
     Force the offline SVG map with BACTOLOMEW_SVG_MAP=1.
     """
+
+    countryHovered = QtCore.pyqtSignal(str)
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
@@ -743,7 +747,7 @@ class GeoMapLibreView(QtWidgets.QWidget):
         self._set_active(view, is_web=True)
 
     def _on_maplibre_failed(self, _reason: str) -> None:
-        # MapLibre couldn't render (WebGL/network) — drop to the offline SVG map.
+        # MapLibre couldn't render (WebGL/network) - drop to the offline SVG map.
         if self._is_web:
             self._activate_svg()
 
@@ -764,13 +768,21 @@ class GeoMapLibreView(QtWidgets.QWidget):
             self._message_label = None
         if self._active is not None:
             self._layout.removeWidget(self._active)
+            try:
+                self._active.countryHovered.disconnect(self.countryHovered)
+            except (AttributeError, TypeError):
+                pass
             self._active.deleteLater()
+            self.countryHovered.emit("")  # the old map's hover ends with it
         self._active = view
+        hovered = getattr(view, "countryHovered", None)
+        if hovered is not None:
+            hovered.connect(self.countryHovered)
         self._is_web = is_web
         self._layout.addWidget(view)
         if self._last_update is not None:
-            points, countries, max_count = self._last_update
-            view.update_data(points, countries, max_count)
+            points, countries, max_count, total = self._last_update
+            view.update_data(points, countries, max_count, total=total)
         if self._last_highlight:
             view.highlight_samples(self._last_highlight)
 
@@ -790,10 +802,11 @@ class GeoMapLibreView(QtWidgets.QWidget):
         return label
 
     # ---- API forwarded to the active backend ----
-    def update_data(self, points: List[dict], countries: Dict[str, int], max_count: int) -> None:
-        self._last_update = (list(points or []), dict(countries or {}), int(max_count or 1))
+    def update_data(self, points: List[dict], countries: Dict[str, int], max_count: int,
+                    total: Optional[int] = None) -> None:
+        self._last_update = (list(points or []), dict(countries or {}), int(max_count or 1), total)
         if self._active is not None:
-            self._active.update_data(points, countries, max_count)
+            self._active.update_data(points, countries, max_count, total=total)
 
     def highlight_sample(self, sample: Optional[str]) -> None:
         self.highlight_samples([sample] if sample is not None and str(sample).strip() else [])
@@ -802,6 +815,12 @@ class GeoMapLibreView(QtWidgets.QWidget):
         self._last_highlight = _ordered_unique_samples(samples)
         if self._active is not None:
             self._active.highlight_samples(self._last_highlight)
+
+    def reset_hover(self) -> None:
+        """Forget the active map's hovered country (see countryHovered)."""
+        reset = getattr(self._active, "reset_hover", None)
+        if reset is not None:
+            reset()
 
 
 class _GeoQmlBridge(QtCore.QObject):

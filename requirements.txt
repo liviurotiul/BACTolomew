@@ -2,18 +2,18 @@
 # in-process pipeline orchestration. All bioinformatics TOOLS run in the container image
 # (see docker/Dockerfile) and are NOT installed here.
 #
-# Install:  python -m venv .venv && .venv/bin/pip install -r requirements.txt
+# Install the tested, pinned set:  .venv/bin/pip install -r requirements.lock
+# (install.sh does this; regenerate the lock with tools/lock_deps.sh).
 # Note: PyQt6-WebEngine is a SEPARATE pip package (unlike conda's all-in-one pyqt).
 
-PyQt6~=6.10
-PyQt6-WebEngine~=6.10
+# Qt-free dependencies shared with the headless pipeline.
+-r requirements-pipeline.txt
 
-polars>=1.36
-pandas>=2.2,<3
-numpy>=1.26,<2
-pyarrow>=15
-scipy>=1.12
+# PyQt6 6.10+ wheels need glibc 2.34 or newer (manylinux_2_34).
+PyQt6>=6.10,<7
+PyQt6-WebEngine>=6.10,<7
+# Docking panels (Qt Advanced Docking System, LGPL-2.1) for explore windows.
+PyQt6Ads>=5.1,<6
 
-matplotlib>=3.9
-pyqtgraph>=0.13
-biopython>=1.84
+matplotlib>=3.9,<4
+pyqtgraph>=0.13.7,<0.15

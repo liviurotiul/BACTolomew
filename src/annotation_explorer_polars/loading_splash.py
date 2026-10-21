@@ -232,7 +232,7 @@ class LoadingSplash(QtWidgets.QWidget):
             )
 
         # Back wave, then a little navigator's ship riding it, then the nearer
-        # waves — so the hull nestles into the water instead of floating above it.
+        # waves - so the hull nestles into the water instead of floating above it.
         draw_wave(layers[0])
         self._draw_ship(painter, w, h, wave_phase, layers[0])
         for layer in layers[1:]:
@@ -249,7 +249,7 @@ class LoadingSplash(QtWidgets.QWidget):
     def _draw_ship(
         self, painter: QtGui.QPainter, w: int, h: int, wave_phase: float, base_layer: tuple
     ) -> None:
-        """A small age-of-exploration ship (caravel/galleon) riding the back wave.
+        """A small three-masted galleon riding the back wave.
 
         Drawn in the same flat, translucent-white idiom as the waves. It bobs on
         the wave surface and rocks with the wave's local slope, and the sails
@@ -282,73 +282,124 @@ class LoadingSplash(QtWidgets.QWidget):
         mast_col = QtGui.QColor(255, 255, 255, 205)
         rig_col = QtGui.QColor(255, 255, 255, 90)
         flag_col = QtGui.QColor(255, 255, 255, 236)
+        # Gunports and the stern windows read as openings: the background blue.
+        port_col = QtGui.QColor(30, 58, 168, 150)
+        lantern_col = QtGui.QColor(255, 236, 170, 235)
 
         painter.save()
         painter.translate(ship_x, surface_y)
         painter.rotate(rock_deg)
+        painter.scale(0.9, 0.9)
         painter.scale(-1.0, 1.0)  # mirror so the ship sails right-to-left
+
+        # Mast positions (x) and heads (y); the bow points to +x before the mirror.
+        fore_x, main_x, mizzen_x = 50.0, 2.0, -56.0
+        fore_top, main_top, mizzen_top = -128.0, -150.0, -112.0
+        bowsprit_tip = QtCore.QPointF(124, -36)
 
         # Standing rigging (behind everything).
         rig_pen = QtGui.QPen(rig_col)
-        rig_pen.setWidthF(1.2)
+        rig_pen.setWidthF(1.1)
         painter.setPen(rig_pen)
-        painter.drawLine(QtCore.QPointF(-58, -2), QtCore.QPointF(28, -122))    # stern stay -> main top
-        painter.drawLine(QtCore.QPointF(104, -22), QtCore.QPointF(28, -122))   # bowsprit -> main top
-        painter.drawLine(QtCore.QPointF(104, -22), QtCore.QPointF(-18, -106))  # bowsprit -> fore top
+        painter.drawLine(bowsprit_tip, QtCore.QPointF(fore_x, fore_top))      # bowsprit -> fore top
+        painter.drawLine(QtCore.QPointF(fore_x, fore_top), QtCore.QPointF(main_x, main_top))
+        painter.drawLine(QtCore.QPointF(main_x, main_top), QtCore.QPointF(mizzen_x, mizzen_top))
+        painter.drawLine(QtCore.QPointF(mizzen_x, mizzen_top), QtCore.QPointF(-92, -36))  # mizzen top -> stern
+        painter.drawLine(QtCore.QPointF(main_x, main_top), QtCore.QPointF(-30, -10))     # main shrouds
+        painter.drawLine(QtCore.QPointF(fore_x, fore_top), QtCore.QPointF(70, -18))      # fore shrouds
 
         # Masts + bowsprit.
         mast_pen = QtGui.QPen(mast_col)
         mast_pen.setWidthF(3.2)
         mast_pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
         painter.setPen(mast_pen)
-        painter.drawLine(QtCore.QPointF(-18, 2), QtCore.QPointF(-18, -106))    # foremast
-        painter.drawLine(QtCore.QPointF(28, 4), QtCore.QPointF(28, -124))      # mainmast
-        painter.drawLine(QtCore.QPointF(74, -6), QtCore.QPointF(104, -22))     # bowsprit
+        painter.drawLine(QtCore.QPointF(fore_x, -14), QtCore.QPointF(fore_x, fore_top))
+        painter.drawLine(QtCore.QPointF(main_x, -2), QtCore.QPointF(main_x, main_top))
+        mast_pen.setWidthF(2.6)
+        painter.setPen(mast_pen)
+        painter.drawLine(QtCore.QPointF(mizzen_x, -22), QtCore.QPointF(mizzen_x, mizzen_top))
+        painter.drawLine(QtCore.QPointF(78, -16), bowsprit_tip)                 # bowsprit
 
         # Sails, billowing to leeward; the belly breathes with the wind.
-        bulge = 11.0 + 2.5 * math.sin(wave_phase * 1.6)
+        bulge = 10.0 + 2.5 * math.sin(wave_phase * 1.6)
         painter.setPen(QtCore.Qt.PenStyle.NoPen)
         painter.setBrush(sail_col)
-        painter.drawPath(self._square_sail(-40, 4, -98, -52, bulge))          # foremast course
-        painter.drawPath(self._square_sail(2, 58, -116, -70, bulge))         # mainmast topsail
-        painter.drawPath(self._square_sail(-6, 62, -62, -8, bulge * 1.15))   # mainmast course
+        painter.drawPath(self._square_sail(36, 66, -120, -84, bulge * 0.8))    # fore topsail
+        painter.drawPath(self._square_sail(30, 72, -78, -30, bulge))           # fore course
+        painter.drawPath(self._square_sail(-16, 22, -142, -102, bulge * 0.85)) # main topsail
+        painter.drawPath(self._square_sail(-26, 32, -96, -26, bulge * 1.15))   # main course
+        painter.drawPath(self._lateen_sail(mizzen_x, bulge))                   # mizzen lateen
+        painter.drawPath(self._square_sail(100, 118, -32, -14, bulge * 0.45))  # spritsail
 
-        # Hull (drawn over the mast feet) + raised stern castle.
+        # Hull (drawn over the mast feet): stepped stern castle, waist, forecastle.
         painter.setBrush(hull_col)
         painter.drawPath(self._hull_path())
-        painter.drawPath(self._stern_castle_path())
+        painter.drawPath(self._beakhead_path())
 
-        # Fluttering pennant at the mainmast head.
+        # Gunports along the side and windows in the stern castle.
+        painter.setBrush(port_col)
+        for x in range(-40, 56, 15):
+            painter.drawRoundedRect(QtCore.QRectF(x, 3.0, 6.0, 4.5), 1.0, 1.0)
+        for x in (-82, -74, -66):
+            painter.drawRoundedRect(QtCore.QRectF(x, -27.0, 5.0, 5.0), 1.0, 1.0)
+
+        # Stern lantern.
+        painter.setBrush(lantern_col)
+        painter.drawEllipse(QtCore.QPointF(-96, -44), 3.2, 3.2)
+
+        # Fluttering pennants at every masthead (the main one longest).
         flutter = 4.0 * math.sin(wave_phase * 3.0)
-        flag = QtGui.QPainterPath()
-        flag.moveTo(28, -124)
-        flag.lineTo(58 + flutter, -119 + flutter * 0.4)
-        flag.lineTo(28, -114)
-        flag.closeSubpath()
         painter.setBrush(flag_col)
-        painter.drawPath(flag)
+        for x, top, length in ((main_x, main_top, 32.0), (fore_x, fore_top, 22.0), (mizzen_x, mizzen_top, 18.0)):
+            flag = QtGui.QPainterPath()
+            flag.moveTo(x, top)
+            flag.lineTo(x + length + flutter, top + 4 + flutter * 0.4)
+            flag.lineTo(x, top + 9)
+            flag.closeSubpath()
+            painter.drawPath(flag)
 
         painter.restore()
 
     @staticmethod
     def _hull_path() -> QtGui.QPainterPath:
+        """A galleon hull: high stepped stern castle (poop and quarterdeck), low
+        waist, raised forecastle and a sharp stem."""
         p = QtGui.QPainterPath()
-        p.moveTo(-76, -2)                       # stern top
-        p.lineTo(-66, 14)                       # stern down into the water
-        p.cubicTo(-34, 30, 34, 30, 66, 16)      # belly
-        p.lineTo(84, -8)                        # raised prow
-        p.lineTo(62, 2)                         # inner bow (deck front)
-        p.cubicTo(16, 8, -34, 8, -60, 2)        # deck sheer back to stern
+        p.moveTo(-98, -40)                       # poop deck, overhanging stern
+        p.lineTo(-88, -6)                        # raked transom
+        p.lineTo(-80, 12)                        # stern down into the water
+        p.cubicTo(-40, 32, 40, 32, 74, 14)       # deep belly
+        p.lineTo(86, -10)                        # stem up to the bow
+        p.lineTo(82, -22)                        # forecastle front
+        p.lineTo(58, -24)                        # forecastle deck
+        p.lineTo(54, -10)                        # step down to the waist
+        p.cubicTo(24, -6, -16, -6, -40, -10)     # waist sheer
+        p.lineTo(-44, -26)                       # step up to the quarterdeck
+        p.lineTo(-70, -30)                       # quarterdeck
+        p.lineTo(-74, -40)                       # step up to the poop
         p.closeSubpath()
         return p
 
     @staticmethod
-    def _stern_castle_path() -> QtGui.QPainterPath:
+    def _beakhead_path() -> QtGui.QPainterPath:
         p = QtGui.QPainterPath()
-        p.moveTo(-76, -2)
-        p.lineTo(-77, -22)
-        p.lineTo(-54, -24)
-        p.lineTo(-50, -2)
+        p.moveTo(84, -12)
+        p.lineTo(104, -8)
+        p.lineTo(80, 0)
+        p.closeSubpath()
+        return p
+
+    @staticmethod
+    def _lateen_sail(mast_x: float, bulge: float) -> QtGui.QPainterPath:
+        """The mizzen's triangular lateen sail on its slanted yard."""
+        top = QtCore.QPointF(mast_x + 22, -110)
+        low = QtCore.QPointF(mast_x - 30, -48)
+        clew = QtCore.QPointF(mast_x + 6, -28)
+        p = QtGui.QPainterPath()
+        p.moveTo(top)
+        p.lineTo(low)                                                       # yard
+        p.quadTo(QtCore.QPointF(mast_x - 4 + bulge * 0.4, -30 + bulge * 0.3), clew)   # foot
+        p.quadTo(QtCore.QPointF(mast_x + 22 + bulge * 0.6, -66), top)       # leech
         p.closeSubpath()
         return p
 

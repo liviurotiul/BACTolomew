@@ -12,6 +12,7 @@ from .plasmid_model import (
     build_plasmid_cluster_context_rows,
     plasmid_cluster_key_from_row,
 )
+from .theme import COLORS
 
 
 _PLASMID_TRUE_VALUES = {"true", "1", "yes", "y", "p", "plasmid"}
@@ -41,6 +42,31 @@ def _gene_label(row: Dict[str, Any]) -> str:
     return _clean_text(row.get("AnnotationID")) or _clean_text(row.get("Id"))
 
 
+def plasmid_gene_rows(ann_df: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """The annotations on MOB-suite plasmid contigs, one row each, with the
+    columns the plasmid cluster table counts from: ``__sample``,
+    ``__cluster_key``, ``__gene_label`` and ``__tags``. Built once per run
+    (it reads every annotation) and then only filtered, per cluster."""
+    columns = ["__sample", "__cluster_key", "__gene_label", "__tags"]
+    if ann_df is None or ann_df.empty or "MobSuiteIsPlasmid" not in ann_df.columns:
+        return pd.DataFrame(columns=columns)
+    df = ann_df.loc[ann_df["MobSuiteIsPlasmid"].map(_truthy)]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+    records = df.to_dict(orient="records")
+    sample = df["Sample"] if "Sample" in df.columns else pd.Series("", index=df.index)
+    tags = df["Tags"] if "Tags" in df.columns else pd.Series("", index=df.index)
+    out = pd.DataFrame(
+        {
+            "__sample": sample.fillna("").astype(str).str.strip().to_numpy(),
+            "__cluster_key": [str(plasmid_cluster_key_from_row(record)).strip() for record in records],
+            "__gene_label": [_gene_label(record) for record in records],
+            "__tags": tags.fillna("").astype(str).to_numpy(),
+        }
+    )
+    return out
+
+
 class _PlasmidTable(QtWidgets.QTableWidget):
     leftTable = QtCore.pyqtSignal()
 
@@ -52,6 +78,8 @@ class _PlasmidTable(QtWidgets.QTableWidget):
 class PlasmidomePanel(QtWidgets.QWidget):
     samplesHovered = QtCore.pyqtSignal(object)
     sampleSubsetRequested = QtCore.pyqtSignal(object)
+    # The row menu's "Open plasmid in new explore window" (plan 3.10).
+    sampleSubsetWindowRequested = QtCore.pyqtSignal(object)
     contextRequested = QtCore.pyqtSignal(object)
 
     _COLUMNS = ["Plasmid", "Samples", "Mobility", "Unique genes", "ARG", "Mobile"]
@@ -62,12 +90,19 @@ class PlasmidomePanel(QtWidgets.QWidget):
         output_dir: Optional[Path],
         plasmid_index: PlasmidClusterIndex,
         parent: Optional[QtWidgets.QWidget] = None,
+        *,
+        gene_rows: Optional[pd.DataFrame] = None,
     ) -> None:
         super().__init__(parent)
-        self._ann_df = ann_df.copy() if ann_df is not None else pd.DataFrame()
+        # Read only (shared with the window); ``gene_rows`` is
+        # ``plasmid_gene_rows(ann_df)`` when the caller already has it.
+        self._ann_df = ann_df if ann_df is not None else pd.DataFrame()
+        self._gene_rows = gene_rows
         self._output_dir = Path(output_dir) if output_dir is not None else None
         self._plasmid_index = plasmid_index
         self._sample_filter: Optional[Set[str]] = None
+        # Samples hovered elsewhere in the window: the rows of their plasmids are tinted.
+        self._linked_samples: Set[str] = set()
         self._rows: List[Dict[str, Any]] = []
         self._row_by_table_row: Dict[int, Dict[str, Any]] = {}
         self._build_ui()
@@ -110,7 +145,10 @@ class PlasmidomePanel(QtWidgets.QWidget):
         root.addWidget(self.table, stretch=1)
 
     def set_sample_filter(self, samples: Optional[Sequence[str]]) -> None:
-        next_filter = {str(sample).strip() for sample in samples or [] if str(sample).strip()} or None
+        # None shows every cluster; an empty sample set shows none.
+        next_filter = (
+            {str(sample).strip() for sample in samples if str(sample).strip()} if samples is not None else None
+        )
         if next_filter == self._sample_filter:
             return
         self._sample_filter = next_filter
@@ -123,28 +161,23 @@ class PlasmidomePanel(QtWidgets.QWidget):
             samples &= self._sample_filter
         return sorted(samples, key=_natural_sort_key)
 
+    def _plasmid_gene_rows(self) -> pd.DataFrame:
+        if self._gene_rows is None:
+            self._gene_rows = plasmid_gene_rows(self._ann_df)
+        return self._gene_rows
+
     def _cluster_gene_stats(self, cluster_key: str, samples: Set[str]) -> Dict[str, int]:
-        if self._ann_df.empty or "MobSuiteIsPlasmid" not in self._ann_df.columns:
-            return {"unique": 0, "arg": 0, "mobile": 0}
-        df = self._ann_df.loc[self._ann_df["MobSuiteIsPlasmid"].map(_truthy)].copy()
+        df = self._plasmid_gene_rows()
         if df.empty:
             return {"unique": 0, "arg": 0, "mobile": 0}
+        mask = df["__cluster_key"] == cluster_key
         if samples:
-            df = df.loc[df["Sample"].fillna("").astype(str).str.strip().isin(samples)].copy()
+            mask &= df["__sample"].isin(samples)
+        df = df.loc[mask]
         if df.empty:
             return {"unique": 0, "arg": 0, "mobile": 0}
-        records = df.to_dict(orient="records")
-        keys = [plasmid_cluster_key_from_row(record) for record in records]
-        df["__cluster_key"] = keys
-        df = df.loc[df["__cluster_key"].astype(str).str.strip() == cluster_key]
-        if df.empty:
-            return {"unique": 0, "arg": 0, "mobile": 0}
-        unique_genes = {
-            label
-            for label in (_gene_label(row) for row in df.to_dict(orient="records"))
-            if label
-        }
-        tags = df.get("Tags", pd.Series("", index=df.index)).fillna("").astype(str)
+        unique_genes = {label for label in df["__gene_label"] if label}
+        tags = df["__tags"]
         return {
             "unique": len(unique_genes),
             "arg": int(tags.str.contains("A", regex=False).sum()),
@@ -220,6 +253,35 @@ class PlasmidomePanel(QtWidgets.QWidget):
                     item.setTextAlignment(int(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter))
                 self.table.setItem(row_idx, col_idx, item)
             self.table.setRowHeight(row_idx, 34)
+        if self._linked_samples:
+            self._apply_linked_tint()
+
+    def set_linked_samples(self, samples: Optional[Sequence[str]]) -> None:
+        """Tint the rows of the plasmids that the samples hovered elsewhere
+        carry (none clears)."""
+        linked = {str(sample).strip() for sample in samples or [] if str(sample).strip()}
+        if linked == self._linked_samples:
+            return
+        self._linked_samples = linked
+        self._apply_linked_tint()
+
+    def linked_rows(self) -> List[int]:
+        """The table rows tinted for the hovered samples."""
+        return [
+            row_idx
+            for row_idx, row in self._row_by_table_row.items()
+            if self._linked_samples.intersection(row.get("samples") or ())
+        ]
+
+    def _apply_linked_tint(self) -> None:
+        tinted = set(self.linked_rows())
+        tint = QtGui.QBrush(QtGui.QColor(COLORS["primary_soft"]))
+        for row_idx in range(self.table.rowCount()):
+            brush = tint if row_idx in tinted else QtGui.QBrush()
+            for col_idx in range(self.table.columnCount()):
+                item = self.table.item(row_idx, col_idx)
+                if item is not None:
+                    item.setBackground(brush)
 
     def _on_cell_entered(self, row: int, _column: int) -> None:
         payload = self._row_by_table_row.get(int(row))
@@ -237,29 +299,45 @@ class PlasmidomePanel(QtWidgets.QWidget):
         if not payload:
             return
         self.table.selectRow(row)
+        menu = self.row_menu(payload)
+        menu.exec(self.table.viewport().mapToGlobal(position))
+        menu.deleteLater()
+
+    def row_menu(self, payload: Dict[str, Any]) -> QtWidgets.QMenu:
+        """The menu of one plasmid row."""
         menu = QtWidgets.QMenu(self.table)
         filter_action = menu.addAction("Filter by this plasmid")
+        window_action = menu.addAction("Open plasmid in new explore window")
+        window_action.setObjectName("PlasmidWindowAction")
+        window_action.setToolTip(
+            "A new explore window that shows only the samples carrying this plasmid; this window stays as it is"
+        )
         context_action = menu.addAction("Open context")
-        chosen = menu.exec(self.table.viewport().mapToGlobal(position))
-        if chosen == filter_action:
-            self._emit_filter_requested(payload)
-        elif chosen == context_action:
-            self._emit_context_requested(str(payload.get("cluster_key") or ""))
+        filter_action.triggered.connect(lambda _c=False: self._emit_filter_requested(payload))
+        window_action.triggered.connect(lambda _c=False: self.sampleSubsetWindowRequested.emit(self._subset_payload(payload)))
+        context_action.triggered.connect(
+            lambda _c=False: self._emit_context_requested(str(payload.get("cluster_key") or ""))
+        )
+        return menu
+
+    @staticmethod
+    def _subset_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "name": str(payload.get("name") or ""),
+            "samples": list(payload.get("samples") or []),
+        }
 
     def _emit_filter_requested(self, payload: Dict[str, Any]) -> None:
-        self.sampleSubsetRequested.emit(
-            {
-                "name": str(payload.get("name") or ""),
-                "samples": list(payload.get("samples") or []),
-            }
-        )
+        self.sampleSubsetRequested.emit(self._subset_payload(payload))
 
     def _emit_context_requested(self, cluster_key: str) -> None:
+        # Every instance of the plasmid, whatever this view's sample filter:
+        # the comparison opens in a neighbourhood window that narrows its rows
+        # to that window's own sample set, which the user may widen later.
         rows = build_plasmid_cluster_context_rows(
             self._ann_df,
             self._plasmid_index,
             cluster_key,
-            sample_filter=self._sample_filter,
         )
         name = self._plasmid_index.display_name_for_cluster(cluster_key)
         self.contextRequested.emit(

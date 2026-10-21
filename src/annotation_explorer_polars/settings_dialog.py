@@ -2,55 +2,52 @@
 
 Phase 1 exposes the global compute limits (max CPU threads, max container RAM)
 persisted to bactolomew_config.json's `resources` block via ToolEnv.save_app_config,
-plus a read-only view of the installed cgMLST schemas. The "Add schema…" import
-flow is wired in a later phase.
+plus the installed cgMLST schemas, with "Add schema…" (import local files, one or
+many) and "Download from cgMLST.org…" (pipeline.CgmlstInstall). The Databases page
+lists, adds and removes the marker and compound databases (pipeline.UserDatabases).
 """
 from __future__ import annotations
 
-import os
+import re
 from pathlib import Path
 from typing import Optional
 
-from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtWidgets
 
-# Local copies of the app's control styles (duplicated to avoid importing
-# startup_dialog, which imports this module).
-_PRIMARY_BTN = (
-    "QPushButton{background:#2f6fed;color:#ffffff;border:none;border-radius:8px;"
-    "padding:6px 18px;font-weight:600;}"
-    "QPushButton:hover{background:#295fd0;}"
-    "QPushButton:disabled{background:#c6d3e6;color:#eef3f8;}"
-)
-_SECONDARY_BTN = (
-    "QPushButton{background:#ffffff;color:#1f2c3b;border:1px solid #cdd6e0;border-radius:8px;"
-    "padding:6px 14px;font-weight:600;}"
-    "QPushButton:hover{background:#f2f6fb;border-color:#b9c9de;}"
-    "QPushButton:disabled{color:#aab6c4;border-color:#e6ecf3;}"
-)
-_GHOST_BTN = (
-    "QPushButton{background:transparent;color:#64748b;border:none;border-radius:8px;"
-    "padding:6px 14px;font-weight:600;}"
-    "QPushButton:hover{background:#e9eef4;color:#1f2c3b;}"
-)
+from pipeline import UserDatabases
+from pipeline.Resources import detect_budget
 
-_GROUP_STYLE = (
-    "QGroupBox{font-weight:700;color:#1f2c3b;border:1px solid #d7dfe8;border-radius:10px;"
-    "margin-top:10px;padding:12px 12px 12px 12px;background:#ffffff;}"
-    "QGroupBox::title{subcontrol-origin:margin;left:12px;padding:0 4px;}"
-)
-_HINT_STYLE = "color:#64748b;font-size:11px;"
+from .settings_column import settings_combo
+
+
+
+def _caption(text: str) -> QtWidgets.QLabel:
+    """A field caption above its control (theme role settingsCaption)."""
+    label = QtWidgets.QLabel(text)
+    label.setProperty("role", "settingsCaption")
+    return label
+
+
+def _hint(text: str) -> QtWidgets.QLabel:
+    label = QtWidgets.QLabel(text)
+    label.setWordWrap(True)
+    label.setProperty("role", "windowHint")
+    return label
+
+
+_DB_COLUMNS = ("Name", "Category", "Sequences", "Size", "Added", "Status")
 
 
 class SettingsDialog(QtWidgets.QDialog):
     """Edit global settings. Reads/writes bactolomew_config.json (merge-based)."""
 
-    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None, *, db_root: Optional[Path] = None) -> None:
         super().__init__(parent)
+        self._db_root = db_root  # None: the project's DB folder
         self.setWindowTitle("Settings")
         self.setObjectName("SettingsDialog")
-        self.setStyleSheet("QDialog#SettingsDialog { background: #eef3f8; }")
-        self.resize(560, 500)
-        self._cpu_total = os.cpu_count() or 1
+        self.resize(560, 680)
+        self._cpu_total = detect_budget().cores
         self._build_ui()
         self._load_current()
 
@@ -59,40 +56,60 @@ class SettingsDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(22, 20, 22, 18)
         layout.setSpacing(12)
+        # The window never gets smaller than its content (no overlapping controls).
+        layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
 
         title = QtWidgets.QLabel("Settings")
-        title.setStyleSheet("font-size: 18px; font-weight: 800; color: #172433;")
+        title.setProperty("role", "windowTitle")
         layout.addWidget(title)
 
-        layout.addWidget(self._build_resources_group())
-        layout.addWidget(self._build_schemas_group(), stretch=1)
+        self.pages = QtWidgets.QTabWidget()
+        general = QtWidgets.QWidget()
+        general_layout = QtWidgets.QVBoxLayout(general)
+        general_layout.setContentsMargins(12, 12, 12, 12)
+        general_layout.setSpacing(12)
+        general_layout.addWidget(self._build_resources_group())
+        general_layout.addWidget(self._build_schemas_group(), stretch=1)
+        self.pages.addTab(general, "General")
+        self.pages.addTab(self._build_databases_page(), "Databases")
+        layout.addWidget(self.pages, stretch=1)
 
-        btn_row = QtWidgets.QHBoxLayout()
+        footer = QtWidgets.QFrame()
+        footer.setObjectName("StartFooter")
+        btn_row = QtWidgets.QHBoxLayout(footer)
+        btn_row.setContentsMargins(0, 12, 0, 0)
+        btn_row.setSpacing(8)
         btn_row.addStretch(1)
         cancel_btn = QtWidgets.QPushButton("Cancel")
-        cancel_btn.setStyleSheet(_GHOST_BTN)
+        cancel_btn.setProperty("role", "flat")
         cancel_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(cancel_btn)
         save_btn = QtWidgets.QPushButton("Save")
-        save_btn.setStyleSheet(_PRIMARY_BTN)
+        save_btn.setProperty("role", "primary")
+        save_btn.setDefault(True)
         save_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         save_btn.clicked.connect(self._save)
         btn_row.addWidget(save_btn)
-        layout.addLayout(btn_row)
+        layout.addWidget(footer)
 
     def _build_resources_group(self) -> QtWidgets.QGroupBox:
         group = QtWidgets.QGroupBox("Resources")
-        group.setStyleSheet(_GROUP_STYLE)
-        form = QtWidgets.QFormLayout(group)
-        form.setContentsMargins(12, 16, 12, 12)
-        form.setSpacing(10)
+        # Each caption above its control, the wrapped hint below them.
+        box = QtWidgets.QVBoxLayout(group)
+        box.setContentsMargins(14, 22, 14, 14)
+        box.setSpacing(4)
 
         # Max CPU threads
         self.threads_spin = QtWidgets.QSpinBox()
         self.threads_spin.setRange(8, max(8, self._cpu_total))
         self.threads_spin.setSuffix(" threads")
-        form.addRow("Max CPU threads", self.threads_spin)
+        box.addWidget(_caption("Max CPU threads"))
+        threads_row = QtWidgets.QHBoxLayout()
+        threads_row.addWidget(self.threads_spin)
+        threads_row.addStretch(1)
+        box.addLayout(threads_row)
+        box.addSpacing(8)
 
         # Max container RAM (opt-in; 0 in config == no limit)
         ram_row = QtWidgets.QHBoxLayout()
@@ -104,48 +121,97 @@ class SettingsDialog(QtWidgets.QDialog):
         ram_row.addWidget(self.ram_check)
         ram_row.addWidget(self.ram_spin)
         ram_row.addStretch(1)
-        form.addRow("Max RAM", ram_row)
+        box.addWidget(_caption("Max RAM"))
+        box.addLayout(ram_row)
+        box.addSpacing(8)
 
-        hint = QtWidgets.QLabel(
-            f"Physical cores available: {self._cpu_total}. The thread cap applies to every new "
-            "run (a per-run --cores still overrides). The RAM limit is applied to Docker tool "
-            "containers (--memory) and enables CheckM2 low-memory mode when tight."
+        box.addWidget(
+            _hint(
+                f"Physical cores available: {self._cpu_total}. The thread cap applies to every new "
+                "run (a per-run --cores still overrides). The RAM limit is applied to Docker tool "
+                "containers (--memory) and enables CheckM2 low-memory mode when tight."
+            )
         )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(_HINT_STYLE)
-        form.addRow(hint)
         return group
 
     def _build_schemas_group(self) -> QtWidgets.QGroupBox:
         group = QtWidgets.QGroupBox("cgMLST schemas")
-        group.setStyleSheet(_GROUP_STYLE)
         v = QtWidgets.QVBoxLayout(group)
-        v.setContentsMargins(12, 16, 12, 12)
+        v.setContentsMargins(14, 22, 14, 14)
         v.setSpacing(8)
 
         self.schema_list = QtWidgets.QListWidget()
-        self.schema_list.setStyleSheet(
-            "QListWidget{background:#f7f9fc;border:1px solid #e2e8f0;border-radius:8px;}"
-        )
+        self.schema_list.setMinimumHeight(132)  # about six schemas without scrolling
         v.addWidget(self.schema_list, stretch=1)
 
         row = QtWidgets.QHBoxLayout()
         add_btn = QtWidgets.QPushButton("Add schema…")
-        add_btn.setStyleSheet(_SECONDARY_BTN)
         add_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         add_btn.clicked.connect(self._add_schema)
         row.addWidget(add_btn)
+        download_btn = QtWidgets.QPushButton("Download from cgMLST.org…")
+        download_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        download_btn.clicked.connect(self._download_schemas)
+        row.addWidget(download_btn)
         row.addStretch(1)
         v.addLayout(row)
 
-        hint = QtWidgets.QLabel(
-            "Installed species schemas under DB/cgmlst. A run auto-selects the matching schema "
-            "from its MLST result."
+        v.addWidget(
+            _hint(
+                "Installed species schemas under DB/cgmlst. A run auto-selects the matching schema "
+                "from its MLST result."
+            )
         )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(_HINT_STYLE)
-        v.addWidget(hint)
         return group
+
+    def _build_databases_page(self) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget()
+        box = QtWidgets.QVBoxLayout(page)
+        box.setContentsMargins(14, 14, 14, 14)
+        box.setSpacing(8)
+        box.addWidget(_caption("Marker and compound databases"))
+
+        self.db_table = QtWidgets.QTableWidget(0, len(_DB_COLUMNS))
+        self.db_table.setObjectName("UserDatabaseTable")
+        self.db_table.setHorizontalHeaderLabels(list(_DB_COLUMNS))
+        self.db_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.db_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.db_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.db_table.setAlternatingRowColors(True)
+        self.db_table.setWordWrap(False)
+        self.db_table.verticalHeader().setVisible(False)
+        self.db_table.setMinimumHeight(180)
+        header = self.db_table.horizontalHeader()
+        header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.db_table.setTextElideMode(QtCore.Qt.TextElideMode.ElideRight)
+        self.db_table.itemSelectionChanged.connect(self._sync_db_buttons)
+        box.addWidget(self.db_table, stretch=1)
+
+        self.db_empty = _hint("")
+        box.addWidget(self.db_empty)
+        self.db_empty_space = QtWidgets.QWidget()
+        box.addWidget(self.db_empty_space, stretch=1)
+
+        row = QtWidgets.QHBoxLayout()
+        add_btn = QtWidgets.QPushButton("Add database…")
+        add_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        add_btn.clicked.connect(self._add_database)
+        row.addWidget(add_btn)
+        self.db_remove_btn = QtWidgets.QPushButton("Remove")
+        self.db_remove_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.db_remove_btn.clicked.connect(self._remove_database)
+        row.addWidget(self.db_remove_btn)
+        row.addStretch(1)
+        box.addLayout(row)
+
+        box.addWidget(
+            _hint(
+                "Protein FASTAs searched with DIAMOND after Bakta, from the next run. You are "
+                "responsible for each database's license."
+            )
+        )
+        return page
 
     # ---- data ----
     def _load_current(self) -> None:
@@ -159,6 +225,43 @@ class SettingsDialog(QtWidgets.QDialog):
         self.ram_spin.setValue(ram if ram >= 16 else 16)
 
         self._reload_schema_list()
+        self._reload_databases()
+
+    def _reload_databases(self) -> None:
+        try:
+            databases = UserDatabases.list_databases(self._db_root)
+            error = ""
+        except UserDatabases.DatabaseError as exc:
+            databases, error = [], str(exc)
+        table = self.db_table
+        table.setRowCount(len(databases))
+        for r, db in enumerate(databases):
+            values = (
+                db.name,
+                UserDatabases.CATEGORY_LABELS.get(db.category, db.category),
+                "" if db.sequences is None else f"{db.sequences:,}",
+                UserDatabases.human_size(db.size) if db.size else "",
+                db.added[:10],
+                db.status,
+            )
+            for c, value in enumerate(values):
+                item = QtWidgets.QTableWidgetItem(value)
+                if c in (2, 3):
+                    item.setTextAlignment(
+                        QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
+                    )
+                item.setToolTip("\n".join(t for t in (str(db.path), db.note) if t))
+                table.setItem(r, c, item)
+        table.setVisible(bool(databases))
+        self.db_empty.setText(
+            error or "No databases added. Runs annotate with Bakta and the pipeline's own tools."
+        )
+        self.db_empty.setVisible(not databases)
+        self.db_empty_space.setVisible(not databases)
+        self._sync_db_buttons()
+
+    def _sync_db_buttons(self) -> None:
+        self.db_remove_btn.setEnabled(bool(self.db_table.selectedItems()))
 
     def _reload_schema_list(self) -> None:
         self.schema_list.clear()
@@ -192,6 +295,40 @@ class SettingsDialog(QtWidgets.QDialog):
         if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
             self._reload_schema_list()
 
+    def _download_schemas(self) -> None:
+        from pipeline.CgmlstInstall import default_dest
+
+        from .cgmlst_download_dialog import CgmlstDownloadDialog
+
+        dlg = CgmlstDownloadDialog(default_dest(), self)
+        dlg.exec()
+        if dlg.installed_any:
+            self._reload_schema_list()
+
+    def _add_database(self) -> None:
+        dlg = AddDatabaseDialog(self, db_root=self._db_root)
+        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            self._reload_databases()
+
+    def _remove_database(self) -> None:
+        row = self.db_table.currentRow()
+        item = self.db_table.item(row, 0) if row >= 0 else None
+        if item is None:
+            return
+        name = item.text()
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Remove database",
+            f"Remove {name}? Runs stop searching it; its file is moved to DB/_removed.",
+        )
+        if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        try:
+            UserDatabases.remove_database(name, self._db_root)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the user
+            QtWidgets.QMessageBox.critical(self, "Remove failed", str(exc))
+        self._reload_databases()
+
     def _save(self) -> None:
         from pipeline.ToolEnv import save_app_config
 
@@ -205,3 +342,148 @@ class SettingsDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.critical(self, "Save failed", f"Could not save settings:\n{exc}")
             return
         self.accept()
+
+
+class AddDatabaseDialog(QtWidgets.QDialog):
+    """Add a protein FASTA as a marker or compound database (pipeline.UserDatabases)."""
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None, *, db_root: Optional[Path] = None) -> None:
+        super().__init__(parent)
+        self._db_root = db_root
+        self.setWindowTitle("Add database")
+        self.setObjectName("AddDatabaseDialog")
+        self.resize(520, 0)
+        self.added: Optional[UserDatabases.UserDatabase] = None
+        self._worker: Optional[_AddDatabaseWorker] = None
+        self._category = UserDatabases.MARKER_CATEGORIES[0]
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(10)
+        layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
+        title = QtWidgets.QLabel("Add database")
+        title.setProperty("role", "windowTitle")
+        layout.addWidget(title)
+
+        file_row = QtWidgets.QHBoxLayout()
+        self.file_edit = QtWidgets.QLineEdit()
+        self.file_edit.setPlaceholderText("Protein FASTA (amino acids)")
+        browse = QtWidgets.QPushButton("Browse…")
+        browse.clicked.connect(self._browse)
+        file_row.addWidget(self.file_edit, 1)
+        file_row.addWidget(browse)
+        layout.addWidget(_caption("FASTA file"))
+        layout.addLayout(file_row)
+
+        self.name_edit = QtWidgets.QLineEdit()
+        self.name_edit.setPlaceholderText("letters, digits, - and _")
+        layout.addWidget(_caption("Name"))
+        layout.addWidget(self.name_edit)
+
+        options = [(c, UserDatabases.CATEGORY_LABELS[c], "") for c in UserDatabases.CATEGORIES]
+        self.category_combo = settings_combo(self, options, self._category, self._set_category)
+        layout.addWidget(_caption("Category"))
+        layout.addWidget(self.category_combo)
+
+        self.note_edit = QtWidgets.QPlainTextEdit()
+        self.note_edit.setPlaceholderText("Source, version or license (optional)")
+        self.note_edit.setFixedHeight(64)
+        layout.addWidget(_caption("Note"))
+        layout.addWidget(self.note_edit)
+
+        self.error_label = _hint("")
+        self.error_label.setProperty("role", "warningChip")
+        self.error_label.hide()
+        layout.addWidget(self.error_label)
+
+        footer = QtWidgets.QFrame()
+        footer.setObjectName("StartFooter")
+        btns = QtWidgets.QHBoxLayout(footer)
+        btns.setContentsMargins(0, 12, 0, 0)
+        btns.setSpacing(8)
+        btns.addStretch(1)
+        self.cancel_btn = QtWidgets.QPushButton("Cancel")
+        self.cancel_btn.setProperty("role", "flat")
+        self.cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(self.cancel_btn)
+        self.add_btn = QtWidgets.QPushButton("Add")
+        self.add_btn.setProperty("role", "primary")
+        self.add_btn.setDefault(True)
+        self.add_btn.clicked.connect(self._add)
+        btns.addWidget(self.add_btn)
+        layout.addWidget(footer)
+
+    def _set_category(self, value: str) -> None:
+        self._category = value
+
+    def _browse(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Protein FASTA", "", "FASTA (*.fasta *.fa *.faa *.fas *.gz);;All files (*)"
+        )
+        if path:
+            self.set_file(path)
+
+    def set_file(self, path: str) -> None:
+        self.file_edit.setText(path)
+        if not self.name_edit.text().strip():
+            self.name_edit.setText(re.sub(r"[^A-Za-z0-9_-]+", "_", Path(path).stem).strip("_-")[:64])
+
+    def _add(self) -> None:
+        # Checking, copying and hashing a large FASTA takes minutes: run it off the GUI thread.
+        self.error_label.hide()
+        self._set_busy(True)
+        self._worker = _AddDatabaseWorker(
+            Path(self.file_edit.text().strip()),
+            self.name_edit.text(),
+            self._category,
+            self.note_edit.toPlainText(),
+            self._db_root,
+        )
+        self._worker.done.connect(self._add_done)
+        self._worker.failed.connect(self._add_failed)
+        self._worker.start()
+
+    def _set_busy(self, busy: bool) -> None:
+        for widget in (self.file_edit, self.name_edit, self.category_combo, self.note_edit, self.add_btn, self.cancel_btn):
+            widget.setEnabled(not busy)
+        self.add_btn.setText("Adding…" if busy else "Add")
+
+    def _add_done(self, db: UserDatabases.UserDatabase) -> None:
+        self._worker.wait()
+        self._worker = None
+        self.added = db
+        self.accept()
+
+    def _add_failed(self, message: str) -> None:
+        self._worker.wait()
+        self._worker = None
+        self._set_busy(False)
+        self.error_label.setText(message)
+        self.error_label.show()
+
+    def reject(self) -> None:
+        if self._worker is None:  # the copy cannot be stopped halfway
+            super().reject()
+
+
+class _AddDatabaseWorker(QtCore.QThread):
+    """Runs UserDatabases.add_database off the GUI thread."""
+
+    done = QtCore.pyqtSignal(object)
+    failed = QtCore.pyqtSignal(str)
+
+    def __init__(self, fasta: Path, name: str, category: str, note: str, db_root: Optional[Path]) -> None:
+        super().__init__()
+        self._args = (fasta, name, category)
+        self._note = note
+        self._db_root = db_root
+
+    def run(self) -> None:
+        try:
+            db = UserDatabases.add_database(*self._args, note=self._note, db_root=self._db_root)
+        except (UserDatabases.DatabaseError, OSError) as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:  # noqa: BLE001 - surfaced to the user
+            self.failed.emit(f"Could not add the database: {exc}")
+        else:
+            self.done.emit(db)

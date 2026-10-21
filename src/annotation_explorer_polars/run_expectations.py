@@ -6,6 +6,8 @@ import socket
 from pathlib import Path
 from typing import Optional, Sequence
 
+from pipeline.RunValidation import skippable_steps
+
 from .constants import RUN_LOCK_FILENAME, RUN_REPORT_FILENAME, RUN_STATE_FILENAME
 
 _FASTGEAR_EXPECTED_RELATIVE = (
@@ -13,6 +15,8 @@ _FASTGEAR_EXPECTED_RELATIVE = (
     Path("fastgear") / "output" / "lineage_information.txt",
     Path("fastgear") / "sample_clades.tsv",
 )
+# Runs whose expected_outputs.json predates the tree files (the phylogeny rework of
+# 2026-10 lists trees/trees.json and the raw Snippy tree itself).
 _PHYLOGENY_EXPECTED_RELATIVE = (
     Path("trees") / "core_gene_tree.nwk",
     Path("trees") / "snippy_raxml.tree",
@@ -53,6 +57,7 @@ _IGNORED_LEGACY_SEGMENTS = (
 _PENDING_LABELS = {
     "Run files": "run files",
     "Bakta": "Bakta",
+    "Core alignment": "ordered core alignment",
     "Gubbins": "Gubbins",
     "Phylogeny": "phylogeny trees",
     "DIAMOND marker DBs": "marker DBs",
@@ -65,6 +70,8 @@ _PENDING_LABELS = {
     "MLST": "MLST",
     "MOB-suite": "MOB-suite",
     "Assembly QC": "assembly QC",
+    "AMRFinderPlus": "AMRFinderPlus",
+    "Bakta evidence": "Bakta evidence",
 }
 _REQUIRED_STEP_LABELS = {
     "assembly_qc": "assembly QC",
@@ -165,10 +172,12 @@ def _missing_expected_output_message(output_dir: Path) -> str | None:
     return "Missing required outputs: " + ", ".join(labels)
 
 
-def _required_step_validation_errors(report: dict) -> list[str]:
+def _required_step_validation_errors(report: dict, run_cfg: dict | None) -> list[str]:
     steps = report.get("steps") if isinstance(report.get("steps"), dict) else {}
     missing: list[str] = []
     incomplete: list[str] = []
+    # A search skipped because none of its databases was installed is not incomplete.
+    skippable = skippable_steps(run_cfg)
 
     for step_name, label in _REQUIRED_STEP_LABELS.items():
         step = steps.get(step_name) if isinstance(steps, dict) else None
@@ -176,6 +185,8 @@ def _required_step_validation_errors(report: dict) -> list[str]:
             missing.append(label)
             continue
         status = str(step.get("status") or "").strip().lower()
+        if status == "skipped" and step_name in skippable:
+            continue
         if status != "success" or step.get("outputs_validated") is False:
             incomplete.append(label)
 
@@ -227,7 +238,7 @@ def load_run_status(output_dir: Path) -> dict[str, object]:
         validation_errors = validation_errors or ["Run outputs were not validated successfully."]
 
     if raw_status == "success":
-        success_errors = _required_step_validation_errors(report)
+        success_errors = _required_step_validation_errors(report, _load_run_config(output_dir))
         missing_outputs = _missing_expected_output_message(output_dir)
         if missing_outputs:
             success_errors.insert(0, missing_outputs)
@@ -251,6 +262,8 @@ def load_run_status(output_dir: Path) -> dict[str, object]:
         "outputs_validated": outputs_validated,
         "validation_errors": validation_errors,
         "has_final_report": has_final_report,
+        # The parsed run_state.json, so a caller that also shows the steps reads it once.
+        "state": state,
     }
 
 
@@ -313,14 +326,18 @@ def _should_expect_fastgear(output_dir: Path, expected_files: Sequence[Path]) ->
 
 
 def _should_expect_phylogeny(output_dir: Path, expected_files: Sequence[Path]) -> bool:
+    # A run that lists its tree files is taken as is (new runs no longer make
+    # core_gene_tree.nwk); only an old list without them gets the old names.
     if any("/trees/" in str(path) for path in expected_files):
-        return True
+        return False
     return _run_uses_panaroo(output_dir, expected_files)
 
 
 def _should_expect_gubbins(output_dir: Path, expected_files: Sequence[Path]) -> bool:
+    # A run that lists its Gubbins files is taken as is (a skipped Gubbins has only
+    # its summary).
     if any("/gubbins/" in str(path) for path in expected_files):
-        return True
+        return False
     return _run_uses_panaroo(output_dir, expected_files)
 
 
@@ -376,6 +393,8 @@ def classify_expected_path(path: Path) -> Optional[str]:
         return "Run files"
     if "/panaroo/out/" in s:
         return "Panaroo"
+    if "/core_alignment/" in s:
+        return "Core alignment"
     if "/gubbins/" in s:
         return "Gubbins"
     if "/trees/" in s or name in {"core_gene_tree.nwk", "snippy_raxml.tree", "snippy_raxml.newick"}:
@@ -390,6 +409,10 @@ def classify_expected_path(path: Path) -> Optional[str]:
         return "MOB-suite"
     if "/assembly_qc/" in s:
         return "Assembly QC"
+    if "/amrfinder/" in s:
+        return "AMRFinderPlus"
+    if "/evidence/" in s:
+        return "Bakta evidence"
     if "/annotations/bakta_vs_queries/" in s:
         return "DIAMOND marker hits"
     if "/annotations/reference_loci/" in s:
@@ -433,6 +456,16 @@ def summarize_pending_outputs(output_dir: Path, expected_files: Sequence[Path]) 
     return "Pending: " + ", ".join(labels)
 
 
+def pending_outputs_text(output_dir: Path) -> Optional[str]:
+    """What a partial run still lacks ("Gubbins not yet run. Click Resume to run it.",
+    "Pending: ..."), from expected_outputs.json; None when nothing is missing."""
+    output_dir = Path(output_dir)
+    expected_files = resolve_expected_files(output_dir)
+    if not expected_files:
+        return None
+    return summarize_pending_outputs(output_dir, expected_files)
+
+
 __all__ = [
     "describe_run_status",
     "classify_expected_path",
@@ -440,6 +473,7 @@ __all__ = [
     "load_run_report",
     "load_run_state",
     "load_run_status",
+    "pending_outputs_text",
     "resolve_expected_files",
     "run_allows_resume",
     "run_allows_view",

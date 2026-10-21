@@ -4,8 +4,7 @@ from importlib import import_module
 
 
 _LAZY_EXPORTS = {
-    "AlignmentDialog": ("annotation_explorer_polars.alignment_dialog", "AlignmentDialog"),
-    "AnnotationExplorer": ("annotation_explorer_polars.explorer_window", "AnnotationExplorer"),
+    "ExploreWindow": ("annotation_explorer_polars.windows.explore_window", "ExploreWindow"),
     "ANNOTATION_COLUMNS_TO_SHOW": ("annotation_explorer_polars.constants", "ANNOTATION_COLUMNS_TO_SHOW"),
     "ANNOTATIONS_FILENAME": ("annotation_explorer_polars.constants", "ANNOTATIONS_FILENAME"),
     "EXPECTED_ANNOTATION_COLUMNS": ("annotation_explorer_polars.constants", "EXPECTED_ANNOTATION_COLUMNS"),

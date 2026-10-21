@@ -17,12 +17,19 @@ ANNOTATIONS_CACHE_FILENAME = "annotations.parquet"
 REFERENCE_LOCUS_CACHE_FILENAME = "reference_locus_hits.parquet"
 MARKER_HITS_CACHE_FILENAME = "marker_hits.parquet"
 TABLE_CACHE_META_FILENAME = "tables_meta.json"
+# ui_cache.json "metadata_source" of a run opened with its own data only (no CSV).
+RUN_METADATA_SOURCE = "run"
 # Only the current cache schema is supported. Older metadata is invalidated
 # and rebuilt in place instead of maintaining multiple legacy cache formats.
 # v13: marker hits now collapse per (AnnotationID, DB) instead of (AnnotationID, Method),
 #      so AMRF category databases are no longer merged. Bumping invalidates stale caches
 #      built before the fix, forcing a rebuild from the existing DIAMOND TSVs.
-TABLE_CACHE_SCHEMA_VERSION = 13
+# v14: marker hits to resistance target models (CARD VM/KM/OM, AMRFinderPlus POINT,
+#      POINT_DISRUPT, AMR-SUSCEPTIBLE) are dropped and the AMRF/CARD metadata indexes no
+#      longer attach the first catalog row (often a point-mutation allele) to every hit.
+# v15: AMRFinderPlus point mutations (amrfinder/*.tsv) add ResistanceMutations,
+#      ResistanceMutationClasses and the X tag to the annotation table.
+TABLE_CACHE_SCHEMA_VERSION = 15
 
 
 def project_root() -> Path:
@@ -181,6 +188,10 @@ def _table_source_paths(output_dir: Path) -> list[Path]:
         (root / "mobsuite", "summary.json"),
         (root / "annotations" / "bakta_vs_queries", "*.tsv"),
         (root / "annotations" / "reference_loci", "*.tsv"),
+        (root / "amrfinder", "*.tsv"),
+        (root / "amrfinder", "summary.json"),
+        (root / "evidence", "*.tsv"),
+        (root / "evidence", "summary.json"),
     ]
     for base_dir, pattern in scan_specs:
         if not base_dir.exists():
@@ -251,6 +262,7 @@ def write_cached_tables(run_id: str, output_dir: Path, ann_df, ref_df, marker_hi
     except Exception as exc:
         raise RuntimeError(
             "Failed to write parquet cache tables. Install pyarrow to enable parquet support."
+            f" ({type(exc).__name__}: {exc})"
         ) from exc
     return ann_path, ref_path, marker_hits_path
 
@@ -275,6 +287,7 @@ def read_cached_tables(run_id: str):
     except Exception as exc:
         raise RuntimeError(
             "Failed to read parquet cache tables. Install pyarrow to enable parquet support."
+            f" ({type(exc).__name__}: {exc})"
         ) from exc
     return ann_df, ref_df, marker_hits_df
 
@@ -297,12 +310,18 @@ def load_run_cache(run_id: str) -> Dict[str, str]:
     meta = data.get("metadata_csv")
     if isinstance(meta, str) and meta.strip():
         out["metadata_csv"] = meta
+    if data.get("metadata_source") == RUN_METADATA_SOURCE:
+        out["metadata_source"] = RUN_METADATA_SOURCE
     return out
 
 
-def save_run_cache(run_id: str, metadata_csv: Optional[Path]) -> None:
+def save_run_cache(run_id: str, metadata_csv: Optional[Path], *, run_data_only: bool = False) -> None:
+    """The run's metadata choice: a CSV, or (``run_data_only``) the run's own
+    sample table, remembered so the run opens without asking again."""
     data: Dict[str, Any] = {
         "metadata_csv": str(metadata_csv) if metadata_csv else "",
     }
+    if run_data_only:
+        data["metadata_source"] = RUN_METADATA_SOURCE
     path = run_cache_path(run_id)
     path.write_text(json.dumps(data, indent=2, sort_keys=True))

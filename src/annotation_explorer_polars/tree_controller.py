@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import bisect
 import hashlib
 import html
 import json
 import re
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -13,20 +11,18 @@ import pandas as pd
 import polars as pl
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from .alignment_dialog import AlignmentDialog
-from .annotation_detail_dialog import AnnotationDetailDialog
-from .annotation_table import AnnotationTableModel, DetailsDelegate, TagsDelegate
-from .constants import ANNOTATION_COLUMNS_TO_SHOW, MISSING_FILTER_TOKEN, PLASMID_TRUE_VALUES
-from .geo_view import GeoMapView
-from .igv_view import GeneSegment, IgvTrackView
-from .metadata_filter_dialog import MetadataValueDialog
-from .plasmid_model import plasmid_cluster_key_from_row
-from .panaroo_views import (
-    EntropyTrackTab,
-    PanCoreAccessoryTab,
-    SimilarityMapTab,
-    StructPresenceHeatmapTab,
+from .constants import PLASMID_TRUE_VALUES
+from .panels.base import ANNOTATIONS, SAMPLE_TREE
+from .session.requests import FocusPanel, params_tuple
+from .model.query_engine import collect_sample_list
+from .model.run_data import (
+    clean_text,
+    mobsuite_plasmid_group_key,
 )
+from .plasmid_model import plasmid_cluster_key_from_row
+
+
+_TREE_SORT_ROLE = QtCore.Qt.ItemDataRole.UserRole.value + 1
 
 
 def _make_mouse_transparent(widget: QtWidgets.QWidget) -> None:
@@ -225,13 +221,12 @@ class _SortableTreeItem(QtWidgets.QTreeWidgetItem):
     def __lt__(self, other: "QtWidgets.QTreeWidgetItem") -> bool:
         tree = self.treeWidget()
         col = tree.sortColumn() if tree is not None else 0
-        a = self.data(col, QtCore.Qt.ItemDataRole.UserRole)
-        b = other.data(col, QtCore.Qt.ItemDataRole.UserRole)
-        try:
-            if a is not None and b is not None:
+        a = self.data(col, _TREE_SORT_ROLE)
+        b = other.data(col, _TREE_SORT_ROLE)
+        if a is not None and b is not None:
+            if isinstance(a, (int, float)) and isinstance(b, (int, float)):
                 return float(a) < float(b)
-        except (TypeError, ValueError):
-            pass
+            return str(a).casefold() < str(b).casefold()
         return self.text(col).casefold() < other.text(col).casefold()
 
 
@@ -610,7 +605,7 @@ class TreeControllerMixin:
             if priority < 99:
                 preferred.append((priority, col_text, value))
         for _priority, _col, value in sorted(preferred, key=lambda item: item[0]):
-            text = self._clean_text(value)
+            text = clean_text(value)
             if not text:
                 continue
             text = re.split(r"[:;,/|]", text, maxsplit=1)[0].strip()
@@ -768,7 +763,7 @@ class TreeControllerMixin:
 
     def _quast_tooltip(self, meta_vals: Dict[str, Any]) -> str:
         quality = self._tree_metric_int_text(meta_vals.get("Quality"))
-        notes = self._clean_text(meta_vals.get("QualityNotes", ""))
+        notes = clean_text(meta_vals.get("QualityNotes", ""))
         rows = [
             ("Quality score", f"{quality}/100" if quality != "--" else "--"),
             ("Total length", f"{self._tree_metric_int_text(meta_vals.get('QuastTotalLength'))} bp"),
@@ -789,7 +784,7 @@ class TreeControllerMixin:
             ("Completeness", completeness),
             ("Contamination", contamination),
         ]
-        model = self._clean_text(meta_vals.get("CheckM2CompletenessModel", ""))
+        model = clean_text(meta_vals.get("CheckM2CompletenessModel", ""))
         if model:
             rows.append(("Completeness model", model))
         detail = ""
@@ -797,7 +792,7 @@ class TreeControllerMixin:
             detail = "Badge: incomplete if completeness is below 90%."
         elif focus == "contamination":
             detail = "Badge: contaminated if contamination is above 5%."
-        notes = self._clean_text(meta_vals.get("QualityNotes", ""))
+        notes = clean_text(meta_vals.get("QualityNotes", ""))
         return self._format_qc_tooltip("CheckM2 genome quality", rows, detail=detail, notes=notes)
 
     def _contig_tooltip(
@@ -826,121 +821,22 @@ class TreeControllerMixin:
             ("oriT", "MobSuiteOriTTypes"),
             ("Mobility", "MobSuitePredictedMobility"),
         ):
-            text = self._clean_text(contig.get(field, ""))
+            text = clean_text(contig.get(field, ""))
             if text:
                 lines.append(f"{label}: {text}")
         return "\n".join(lines)
-
-    def _tree_db_is_resistance(self, db_name: str) -> bool:
-        name = self._clean_text(db_name)
-        if not name:
-            return False
-        category = self._clean_text(getattr(self, "_marker_db_category_map", {}).get(name, ""))
-        category_upper = category.upper()
-        if "AMR" in category_upper or "BMRG" in category_upper:
-            return True
-        name_upper = name.upper()
-        return "AMR" in name_upper or "BMRG" in name_upper or name_upper.startswith("CARD_")
-
-    def _tree_db_is_mge_source(self, db_name: str) -> bool:
-        name = self._clean_text(db_name)
-        if not name:
-            return False
-        name_upper = name.upper()
-        if "ISFINDER" in name_upper or "CGE-MGE" in name_upper:
-            return True
-        category = self._clean_text(getattr(self, "_marker_db_category_map", {}).get(name, ""))
-        category_upper = category.upper()
-        return category_upper == "MOBILE" and ("ISFINDER" in name_upper or "MGE" in name_upper)
-
-    def _tree_db_is_virulence_source(self, db_name: str) -> bool:
-        name = self._clean_text(db_name)
-        if not name:
-            return False
-        name_upper = name.upper()
-        if "VIRULENCE" in name_upper or "VFDB" in name_upper:
-            return True
-        category = self._clean_text(getattr(self, "_marker_db_category_map", {}).get(name, ""))
-        return category.upper() == "VIRULENCE"
-
-    def _table_column_groups(self) -> List[Tuple[str, str, List[Tuple[str, str]]]]:
-        metadata_items = [(f"meta:{col}", str(col)) for col in self.meta_columns_for_tree]
-
-        resistance_items: List[Tuple[str, str]] = [("tree:ATB", "ATB")]
-        annotation_items: List[Tuple[str, str]] = [
-            ("tree:n_total", "n_total"),
-            ("tree:db_total_hits", "db_total_hits"),
-        ]
-
-        for db in self.annotation_db_columns:
-            item = (f"db:{db}", str(db))
-            if self._tree_db_is_resistance(db):
-                resistance_items.append(item)
-            else:
-                annotation_items.append(item)
-
-        return [
-            ("metadata", "Metadata", metadata_items),
-            ("resistance", "Resistance", resistance_items),
-            ("annotations", "Annotations", annotation_items),
-        ]
-
-    def _table_column_items(self) -> List[Tuple[str, str]]:
-        items: List[Tuple[str, str]] = []
-        for _group_key, _group_label, group_items in self._table_column_groups():
-            items.extend(group_items)
-        return items
-
-    def _table_default_selected_columns(self) -> List[str]:
-        # The Geneious-style table shows a fixed set of columns by default;
-        # the optional metadata / db-hit columns start hidden and are opt-in.
-        return []
-
-    def _selected_table_columns(self) -> List[str]:
-        selected = getattr(self, "_table_column_selected", None)
-        available_order = [key for key, _label in self._table_column_items()]
-        if isinstance(selected, list):
-            selected_set = {str(col) for col in selected}
-            return [key for key in available_order if key in selected_set]
-        return available_order
-
-    def _tree_column_index_map(self) -> Dict[str, int]:
-        out: Dict[str, int] = {
-            "tree:n_total": 3,
-            "tree:ATB": 4,
-        }
-        next_idx = 5
-        for col in self.meta_columns_for_tree:
-            out[f"meta:{col}"] = next_idx
-            next_idx += 1
-        out["tree:db_total_hits"] = next_idx
-        next_idx += 1
-        for db in self.annotation_db_columns:
-            out[f"db:{db}"] = next_idx
-            next_idx += 1
-        return out
 
     def _rerender_visible_table_columns(self) -> None:
         tree = getattr(self, "tree", None)
         if tree is None:
             return
         fixed = set(getattr(self, "_fixed_tree_columns", (0,)))
-        if bool(getattr(self, "_sample_tree_compact_view", False)):
-            for col_idx in range(1, tree.columnCount()):
-                tree.setColumnHidden(col_idx, col_idx not in fixed)
+        # Only the fixed columns show; the compact view also drops the header.
+        compact = bool(getattr(self, "_sample_tree_compact_view", False))
+        for col_idx in range(1 if compact else 0, tree.columnCount()):
+            tree.setColumnHidden(col_idx, col_idx not in fixed)
+        if compact:
             tree.setHeaderHidden(True)
-            return
-        index_map = self._tree_column_index_map()
-        selected = {str(col) for col in self._selected_table_columns()}
-        selected_indices = {idx for key, idx in index_map.items() if key in selected}
-        mapped_indices = set(index_map.values())
-        for col_idx in range(tree.columnCount()):
-            if col_idx in fixed:
-                tree.setColumnHidden(col_idx, False)
-            elif col_idx in mapped_indices:
-                tree.setColumnHidden(col_idx, col_idx not in selected_indices)
-            else:
-                tree.setColumnHidden(col_idx, True)
 
     @staticmethod
     def _truthy_text(value: Any) -> bool:
@@ -953,38 +849,7 @@ class TreeControllerMixin:
         return "" if text.lower() in {"", "nan", "none", "null", "<na>"} else text
 
     def _mobsuite_plasmid_group_key(self, row: Dict[str, Any]) -> str:
-        if not self._truthy_text(row.get("MobSuiteIsPlasmid")):
-            return ""
-        plasmid_id = self._nonempty_text(row.get("MobSuitePlasmidID"))
-        if plasmid_id:
-            return plasmid_id
-        sample = self._nonempty_text(row.get("Sample"))
-        primary = self._nonempty_text(row.get("MobSuitePrimaryClusterID"))
-        if sample and primary:
-            return f"{sample}:{primary}"
-        secondary = self._nonempty_text(row.get("MobSuiteSecondaryClusterID"))
-        if sample and secondary:
-            return f"{sample}:secondary:{secondary}"
-        return ""
-
-    def _build_mobsuite_plasmid_members(
-        self,
-        contigs_pl: pl.DataFrame,
-    ) -> Dict[Tuple[str, str], List[str]]:
-        members: Dict[Tuple[str, str], List[str]] = {}
-        if contigs_pl.is_empty():
-            return members
-        for row in contigs_pl.iter_rows(named=True):
-            row_dict = dict(row)
-            sample = self._nonempty_text(row_dict.get("Sample"))
-            contig = self._nonempty_text(row_dict.get("Contig"))
-            group_key = self._mobsuite_plasmid_group_key(row_dict)
-            if not sample or not contig or not group_key:
-                continue
-            bucket = members.setdefault((sample, group_key), [])
-            if contig not in bucket:
-                bucket.append(contig)
-        return members
+        return mobsuite_plasmid_group_key(row)
 
     def _display_contig_records(
         self,
@@ -1006,12 +871,12 @@ class TreeControllerMixin:
 
             group = grouped.get(group_key)
             if group is None:
-                members = list(getattr(self, "_mobsuite_plasmid_members", {}).get((sample, group_key), []))
+                members = list(self.run.mobsuite_plasmid_members.get((sample, group_key), []))
                 if not members:
                     members = [contig]
                 row["__member_contigs"] = members
                 row["__visible_member_contigs"] = [contig]
-                plasmid_index = getattr(self, "_plasmid_cluster_index", None)
+                plasmid_index = self.run.plasmid_cluster_index
                 if plasmid_index is not None and hasattr(plasmid_index, "display_name_for_row"):
                     row["__display_label"] = plasmid_index.display_name_for_row(row)
                 else:
@@ -1037,6 +902,215 @@ class TreeControllerMixin:
                         group[field] = row.get(field)
         return ordered
 
+    @staticmethod
+    def _tree_item_payload(item: Optional[QtWidgets.QTreeWidgetItem]) -> Dict[str, Any]:
+        if item is None:
+            return {}
+        payload_raw = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if not payload_raw:
+            return {}
+        try:
+            payload = json.loads(payload_raw)
+        except (TypeError, ValueError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _tree_item_state_key(
+        self,
+        item: Optional[QtWidgets.QTreeWidgetItem],
+    ) -> Optional[Tuple[object, ...]]:
+        payload = self._tree_item_payload(item)
+        sample = str(payload.get("sample") or "").strip()
+        if not sample:
+            return None
+        contig = str(payload.get("contig") or "").strip()
+        if not contig:
+            return ("sample", sample)
+        members = tuple(
+            str(member).strip()
+            for member in (payload.get("contigs") or [])
+            if str(member).strip()
+        )
+        return ("contig", sample, contig, members)
+
+    def _snapshot_metadata_tree_state(self) -> Dict[str, object]:
+        expanded_samples: set[str] = set()
+        for index in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(index)
+            if item is None or not item.isExpanded():
+                continue
+            payload = self._tree_item_payload(item)
+            sample = str(payload.get("sample") or "").strip()
+            if sample:
+                expanded_samples.add(sample)
+        return {
+            "expanded_samples": expanded_samples,
+            "current_key": self._tree_item_state_key(self.tree.currentItem()),
+            "vertical_scroll": self.tree.verticalScrollBar().value(),
+            "horizontal_scroll": self.tree.horizontalScrollBar().value(),
+        }
+
+    def _restore_metadata_tree_state(self, state: Dict[str, object]) -> None:
+        expanded_samples = {
+            str(sample)
+            for sample in state.get("expanded_samples", set())
+            if str(sample).strip()
+        }
+        current_key = state.get("current_key")
+        current_item: Optional[QtWidgets.QTreeWidgetItem] = None
+        blocker = QtCore.QSignalBlocker(self.tree)
+        try:
+            for sample, sample_item in self._sample_tree_items.items():
+                sample_item.setExpanded(sample in expanded_samples)
+                if current_key == ("sample", sample):
+                    current_item = sample_item
+                if not isinstance(current_key, tuple) or len(current_key) < 3:
+                    continue
+                if current_key[0] != "contig" or current_key[1] != sample:
+                    continue
+                for child_index in range(sample_item.childCount()):
+                    child = sample_item.child(child_index)
+                    if self._tree_item_state_key(child) == current_key:
+                        current_item = child
+                        break
+            if current_item is not None:
+                self.tree.setCurrentItem(current_item)
+        finally:
+            del blocker
+
+        self.tree.doItemsLayout()
+        self.tree.verticalScrollBar().setValue(int(state.get("vertical_scroll", 0)))
+        self.tree.horizontalScrollBar().setValue(int(state.get("horizontal_scroll", 0)))
+
+    def _ensure_sample_tree_sort_sync(self) -> None:
+        if bool(getattr(self, "_sample_tree_sort_sync_connected", False)):
+            return
+        self._sample_tree_sort_sync_connected = True
+        self._sample_tree_header_sort_override = None
+        self._sample_tree_programmatic_sort_change = False
+        self.tree.header().sortIndicatorChanged.connect(self._on_sample_tree_header_sort_changed)
+        for combo_name in ("sample_sort_column_box", "sample_sort_order_box"):
+            combo = getattr(self, combo_name, None)
+            if isinstance(combo, QtWidgets.QComboBox):
+                combo.currentIndexChanged.connect(self._on_sample_tree_sidebar_sort_changed)
+
+    def _on_sample_tree_header_sort_changed(
+        self,
+        column: int,
+        order: QtCore.Qt.SortOrder,
+    ) -> None:
+        if bool(getattr(self, "_sample_tree_programmatic_sort_change", False)):
+            return
+        self._sample_tree_header_sort_override = (int(column), order)
+
+    def _on_sample_tree_sidebar_sort_changed(self, _index: int) -> None:
+        self._sample_tree_header_sort_override = None
+
+    def _sample_tree_sidebar_sort_column(self, sort_column: str) -> int:
+        if sort_column == "__sample__":
+            return 0
+        try:
+            return 5 + self.meta_columns_for_tree.index(sort_column)
+        except ValueError:
+            return 0
+
+    def _apply_sample_tree_sort_indicator(self) -> None:
+        if getattr(self, "_sample_tree_header_sort_override", None) is not None:
+            return
+        sort_column, ascending = self._sample_sort_settings()
+        tree_column = self._sample_tree_sidebar_sort_column(sort_column)
+        order = (
+            QtCore.Qt.SortOrder.AscendingOrder
+            if ascending
+            else QtCore.Qt.SortOrder.DescendingOrder
+        )
+        self._sample_tree_programmatic_sort_change = True
+        try:
+            self.tree.header().setSortIndicator(tree_column, order)
+        finally:
+            self._sample_tree_programmatic_sort_change = False
+
+    def _sample_tree_search_query(self) -> str:
+        """Search text the tree's counts were computed for, or "" when none.
+
+        This is the applied gene and/or product search (the boxes may already
+        be ahead of the result on screen while the user types). While it is
+        non-empty, matching samples open to show their contigs.
+        """
+        applied = self._applied_filters()
+        return " / ".join(text for text in (applied.gene, applied.product) if text)
+
+    def _render_sample_tree(self) -> None:
+        """Rebuild the sample tree from the applied result (no compute). Its
+        rows are the window's one sample set (plan 4.4, D4)."""
+        result = self.ctx.result
+        if result is None:
+            return
+        self._populate_metadata_tree(
+            result.metadata,
+            result.contig_records,
+            result.filtered_counts,
+            result.samples,
+        )
+        self._rerender_visible_table_columns()
+
+    def _resort_sample_tree(self, *_args: object) -> None:
+        """The rail's sort boxes changed: sorting is a tree option, not a
+        filter, so the tree re-sorts from the result it has (plan 4.4)."""
+        self._sample_tree_header_sort_override = None
+        self._render_sample_tree()
+
+    @staticmethod
+    def _copies_tooltip_line(count: int, query: str, scope: str = "sample") -> str:
+        noun = "copy" if int(count) == 1 else "copies"
+        return f"{int(count)} {noun} of {query} in this {scope}"
+
+    def _search_expanded_samples(
+        self,
+        search_query: str,
+        previous_state: Dict[str, object],
+        sample_names: Sequence[str],
+        filtered_counts: Dict[str, int],
+    ) -> set[str]:
+        """Samples to show expanded after a rebuild, given the search text.
+
+        - search starts: remember the user's expansion, open every match;
+        - search text changes: open every match again (zero-match samples closed);
+        - same search text: every match is open except the ones the user
+          collapsed by hand since the text last changed; those stay closed even
+          if another filter briefly hides them and they match again;
+        - search cleared: give back the expansion from before the search.
+        Without a search this is just the previous expansion.
+        Matching is case-insensitive, so a case-only edit is not a new search.
+        """
+        previous_expanded = set(previous_state.get("expanded_samples", set()))
+        previous_query = str(getattr(self, "_sample_tree_expand_query", "") or "")
+        previous_matching = set(getattr(self, "_sample_tree_expand_matching", set()) or set())
+        collapsed = set(getattr(self, "_sample_tree_search_collapsed", set()) or set())
+        matching = {s for s in sample_names if int(filtered_counts.get(s, 0)) > 0}
+        if search_query:
+            if not previous_query:
+                self._sample_tree_pre_search_expanded = previous_expanded
+                collapsed = set()
+            elif search_query.casefold() != previous_query.casefold():
+                collapsed = set()
+            else:
+                # Matches the user closed since the last rebuild join the set;
+                # ones they reopened leave it.
+                collapsed = (collapsed | (previous_matching - previous_expanded)) - previous_expanded
+            expanded = matching - collapsed
+        elif previous_query:
+            expanded = set(getattr(self, "_sample_tree_pre_search_expanded", set()) or set())
+            self._sample_tree_pre_search_expanded = set()
+            collapsed = set()
+        else:
+            expanded = previous_expanded
+            collapsed = set()
+        self._sample_tree_expand_query = search_query
+        self._sample_tree_expand_matching = matching if search_query else set()
+        self._sample_tree_search_collapsed = collapsed
+        return expanded
+
     def _populate_metadata_tree(
         self,
         meta_subset: pl.DataFrame,
@@ -1044,22 +1118,30 @@ class TreeControllerMixin:
         filtered_counts: Dict[str, int],
         allowed_samples: Sequence[str],
     ) -> None:
+        self._ensure_sample_tree_sort_sync()
+        tree_state = self._snapshot_metadata_tree_state()
         self.tree.setUpdatesEnabled(False)
         sorting_was_enabled = self.tree.isSortingEnabled()
         self.tree.setSortingEnabled(False)
+        self._apply_sample_tree_sort_indicator()
         try:
             self.tree.clear()
             self._sample_tree_items = {}
             self._sample_tree_widgets = {}
-            self._tree_hover_sample = None
+            self._tree_hover_shown = ()
+            self._tree_hover_base_fonts = {}
             allowed_set = {str(s).strip() for s in allowed_samples if str(s).strip()}
-            sample_names = sorted(allowed_set) if allowed_set else self._collect_sample_list(meta_subset)
-            gene_query_active = bool(self.gene_query.text().strip()) if hasattr(self, "gene_query") else False
+            sample_names = sorted(allowed_set) if allowed_set else collect_sample_list(meta_subset)
+            search_query = self._sample_tree_search_query()
+            search_active = bool(search_query)
+            tree_state["expanded_samples"] = self._search_expanded_samples(
+                search_query, tree_state, sample_names, filtered_counts
+            )
 
             meta_cols_available = [col for col in self.meta_columns_for_tree if col in meta_subset.columns]
             qc_cols_available = [
                 col
-                for col in getattr(self, "_sample_qc_columns", [])
+                for col in self.run.sample_qc_columns
                 if col in meta_subset.columns and col not in meta_cols_available
             ]
             meta_by_sample: Dict[str, Dict[str, Any]] = {}
@@ -1084,9 +1166,9 @@ class TreeControllerMixin:
             contig_db_map: Dict[Tuple[str, str], Dict[str, int]] = {}
             contig_total_map: Dict[Tuple[str, str], int] = {}
 
-            if not self.annotation_hit_counts_pl.is_empty() and allowed_set:
+            if not self.run.annotation_hit_counts_pl.is_empty() and allowed_set:
                 counts = (
-                    self.annotation_hit_counts_pl.lazy()
+                    self.run.annotation_hit_counts_pl.lazy()
                     .filter(pl.col("Sample").cast(pl.Utf8).is_in(list(allowed_set)))
                     .collect()
                 )
@@ -1114,8 +1196,22 @@ class TreeControllerMixin:
             max_total_hits = max((sample_total_map.get(s, 0) for s in sample_names), default=0)
             max_db_hits = {
                 db: max((sample_db_map.get(s, {}).get(db, 0) for s in sample_names), default=0)
-                for db in self.annotation_db_columns
+                for db in self.run.annotation_db_columns
             }
+
+            contig_copies_map: Dict[Tuple[str, str], int] = {}
+            if search_active:
+                for rec_sample, records in contig_records.items():
+                    for rec in records:
+                        rec_contig = str(rec.get("Contig") or "").strip()
+                        if not rec_contig:
+                            continue
+                        try:
+                            rec_hits = int(rec.get("n_hits") or 0)
+                        except (TypeError, ValueError):
+                            rec_hits = 0
+                        key = (str(rec_sample).strip(), rec_contig)
+                        contig_copies_map[key] = contig_copies_map.get(key, 0) + rec_hits
 
             db_total_col_idx = 5 + len(self.meta_columns_for_tree)
             db_first_col_idx = db_total_col_idx + 1
@@ -1136,29 +1232,28 @@ class TreeControllerMixin:
                 bg, fg = _heat_color(value, max_value)
                 item.setBackground(col_idx, QtGui.QBrush(bg))
                 item.setForeground(col_idx, QtGui.QBrush(fg))
+                item.setData(col_idx, _TREE_SORT_ROLE, int(value))
 
             for sample in sample_names:
                 meta_vals = meta_by_sample.get(sample, {})
                 country = self._country_from_metadata(meta_vals)
-                country_badge = self._country_badge_text(country) or "--"
                 meta_fields: List[str] = []
                 for col in self.meta_columns_for_tree:
                     val = meta_vals.get(col, "")
-                    text = self._clean_text(val)
+                    text = clean_text(val)
                     meta_fields.append(text if text.lower() != "nan" else "")
 
                 sample_hits = int(filtered_counts.get(sample, 0))
                 sample_db_counts = sample_db_map.get(sample, {})
                 sample_db_total = int(sample_total_map.get(sample, 0))
-                sample_atb_total = int(self.sample_atb_counts.get(sample, 0))
-                sample_db_values = [str(int(sample_db_counts.get(db, 0))) for db in self.annotation_db_columns]
-                sample_label = f"[{sample_hits}] {sample}" if gene_query_active else sample
+                sample_atb_total = int(self.run.sample_atb_counts.get(sample, 0))
+                sample_db_values = [str(int(sample_db_counts.get(db, 0))) for db in self.run.annotation_db_columns]
                 sample_item = _SortableTreeItem(
                     [
-                        sample_label,
+                        sample,
                         "",
                         country or "--",
-                        str(int(self.sample_total_counts.get(sample, 0))),
+                        str(int(self.run.sample_total_counts.get(sample, 0))),
                         str(sample_atb_total),
                         *meta_fields,
                         str(sample_db_total),
@@ -1169,6 +1264,9 @@ class TreeControllerMixin:
                 sample_item.setIcon(1, self._tree_vector_icon("card"))
                 sample_item.setIcon(2, self._country_badge_icon(country))
                 sample_tooltip = self._sample_qc_tooltip(sample, country, meta_vals)
+                if search_active:
+                    copies_line = self._copies_tooltip_line(sample_hits, search_query)
+                    sample_tooltip = f"{sample_tooltip}\n{copies_line}"
                 sample_item.setToolTip(0, sample_tooltip)
                 sample_item.setToolTip(1, "Open sample card")
                 sample_item.setToolTip(2, f"Country: {country}" if country else "Country not available")
@@ -1179,15 +1277,23 @@ class TreeControllerMixin:
                 sample_item.setForeground(3, QtGui.QBrush(QtGui.QColor("#4f6275")))
                 sample_item.setForeground(4, QtGui.QBrush(QtGui.QColor("#4f6275")))
                 sample_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, json.dumps({"sample": sample}))
+                sample_item.setData(0, _TREE_SORT_ROLE, sample.casefold())
+                sample_item.setData(2, _TREE_SORT_ROLE, (country or "").casefold())
+                sample_item.setData(
+                    3,
+                    _TREE_SORT_ROLE,
+                    int(self.run.sample_total_counts.get(sample, 0)),
+                )
+                sample_item.setData(4, _TREE_SORT_ROLE, sample_atb_total)
+                for offset, text in enumerate(meta_fields):
+                    sample_item.setData(5 + offset, _TREE_SORT_ROLE, text.casefold())
                 self._sample_tree_items[sample] = sample_item
-                if gene_query_active and sample_hits > 0:
-                    sample_item.setForeground(0, QtGui.QBrush(QtGui.QColor("#2563eb")))
                 if sample_hits == 0:
                     brush = QtGui.QBrush(QtGui.QColor("#888888"))
                     for col_idx in range(5 + len(meta_fields)):
                         sample_item.setForeground(col_idx, brush)
                 _set_heat_cell(sample_item, db_total_col_idx, sample_db_total, max_total_hits)
-                for offset, db in enumerate(self.annotation_db_columns):
+                for offset, db in enumerate(self.run.annotation_db_columns):
                     _set_heat_cell(
                         sample_item,
                         db_first_col_idx + offset,
@@ -1206,13 +1312,14 @@ class TreeControllerMixin:
                 completeness_tooltip = self._checkm2_tooltip(meta_vals, focus="completeness")
                 contamination_tooltip = self._checkm2_tooltip(meta_vals, focus="contamination")
 
-                # ST column
-                subtype_val = self._tree_metric_float(meta_vals.get("subtype"))
-                sample_item.setText(self._col_st, self._st_label(meta_vals.get("subtype")))
+                # ST column: the CSV's subtype, else the run's own MLST ST (run data only)
+                st_value = meta_vals.get("subtype") if "subtype" in meta_vals else meta_vals.get("ST")
+                subtype_val = self._tree_metric_float(st_value)
+                sample_item.setText(self._col_st, self._st_label(st_value))
                 sample_item.setForeground(self._col_st, QtGui.QBrush(QtGui.QColor("#54657a")))
                 sample_item.setToolTip(self._col_st, "Sequence type (MLST)")
                 if subtype_val is not None:
-                    sample_item.setData(self._col_st, QtCore.Qt.ItemDataRole.UserRole, float(subtype_val))
+                    sample_item.setData(self._col_st, _TREE_SORT_ROLE, float(subtype_val))
 
                 # Quality / Completeness / Contamination as coloured numbers
                 qc_font = sample_item.font(self._col_quality)
@@ -1230,7 +1337,7 @@ class TreeControllerMixin:
                     sample_item.setFont(col_idx, qc_font)
                     sample_item.setToolTip(col_idx, tooltip)
                     if value is not None:
-                        sample_item.setData(col_idx, QtCore.Qt.ItemDataRole.UserRole, float(value))
+                        sample_item.setData(col_idx, _TREE_SORT_ROLE, float(value))
                 for contig in self._display_contig_records(contig_records.get(sample, [])):
                     contig_name = str(contig["Contig"]).strip()
                     member_contigs = [
@@ -1242,7 +1349,7 @@ class TreeControllerMixin:
                         member_contigs = [contig_name]
                     contig_keys = [(sample, member) for member in member_contigs]
                     contig_total_hits = int(sum(contig_total_map.get(key, 0) for key in contig_keys))
-                    contig_atb_total = int(sum(int(self.contig_atb_counts.get(key, 0)) for key in contig_keys))
+                    contig_atb_total = int(sum(int(self.run.contig_atb_counts.get(key, 0)) for key in contig_keys))
                     contig_db_counts: Dict[str, int] = {}
                     for key in contig_keys:
                         for db, count in contig_db_map.get(key, {}).items():
@@ -1253,7 +1360,7 @@ class TreeControllerMixin:
                     display_label = str(contig.get("__display_label") or f"Contig {contig_name}")
                     n_total = int(
                         sum(
-                            int(getattr(self, "_contig_total_count_map", {}).get((sample, member), 0))
+                            int(self.run.contig_total_count_map.get((sample, member), 0))
                             for member in member_contigs
                         )
                     )
@@ -1274,7 +1381,7 @@ class TreeControllerMixin:
                                         contig_db_counts.get(db, 0)
                                     )
                                 )
-                                for db in self.annotation_db_columns
+                                for db in self.run.annotation_db_columns
                             ],
                         ]
                     )
@@ -1292,12 +1399,16 @@ class TreeControllerMixin:
                     contig_item.setForeground(2, QtGui.QBrush(QtGui.QColor("#16a34a" if is_plasmid else "#2563eb")))
                     contig_item.setForeground(3, QtGui.QBrush(QtGui.QColor("#718194")))
                     contig_item.setForeground(4, QtGui.QBrush(QtGui.QColor("#718194")))
+                    contig_item.setData(0, _TREE_SORT_ROLE, display_label.casefold())
+                    contig_item.setData(2, _TREE_SORT_ROLE, plasmid_label.casefold())
+                    contig_item.setData(3, _TREE_SORT_ROLE, n_total)
+                    contig_item.setData(4, _TREE_SORT_ROLE, contig_atb_total)
                     contig_font = contig_item.font(2)
                     contig_font.setBold(True)
                     contig_item.setFont(2, contig_font)
                     if is_plasmid_group:
                         member_label = ", ".join(member_contigs)
-                        plasmid_index = getattr(self, "_plasmid_cluster_index", None)
+                        plasmid_index = self.run.plasmid_cluster_index
                         cluster_tooltip = ""
                         if plasmid_index is not None and hasattr(plasmid_index, "tooltip_for_cluster"):
                             try:
@@ -1335,8 +1446,16 @@ class TreeControllerMixin:
                             }
                         ),
                     )
+                    if search_active:
+                        contig_copies = int(sum(contig_copies_map.get(key, 0) for key in contig_keys))
+                        copies_line = self._copies_tooltip_line(
+                            contig_copies,
+                            search_query,
+                            "plasmid group" if is_plasmid_group else "contig",
+                        )
+                        contig_item.setToolTip(0, f"{contig_item.toolTip(0)}\n{copies_line}")
                     _set_heat_cell(contig_item, db_total_col_idx, contig_total_hits, max_total_hits)
-                    for offset, db in enumerate(self.annotation_db_columns):
+                    for offset, db in enumerate(self.run.annotation_db_columns):
                         _set_heat_cell(
                             contig_item,
                             db_first_col_idx + offset,
@@ -1344,11 +1463,12 @@ class TreeControllerMixin:
                             int(max_db_hits.get(db, 0)),
                         )
                     sample_item.addChild(contig_item)
-            self._apply_tree_sample_hover(self._hover_active_sample)
+            self._apply_tree_sample_hover(self._tree_hover_samples())
         finally:
             if sorting_was_enabled:
                 self.tree.setSortingEnabled(True)
             self.tree.setUpdatesEnabled(True)
+        self._restore_metadata_tree_state(tree_state)
 
     def _sample_sort_settings(self) -> Tuple[str, bool]:
         sort_col = "__sample__"
@@ -1380,7 +1500,7 @@ class TreeControllerMixin:
         missing: List[str] = []
         for sample in names:
             row = meta_by_sample.get(sample, {})
-            value = self._clean_text(row.get(sort_col, ""))
+            value = clean_text(row.get(sort_col, ""))
             if value:
                 present.append((sample, value))
             else:
@@ -1445,30 +1565,22 @@ class TreeControllerMixin:
             if callable(open_sample_card):
                 open_sample_card(str(sample))
             return
+        # One selection change (SelectionChanged on the bus): the Annotations
+        # panels in Contig or Around matches mode load the contig, the paired
+        # one with its track (plan 4.5).
         if sample and contig is not None:
-            self.current_sample = sample
-            self.current_contig = contig
-            self.current_contigs = contigs or [str(contig)]
-            self.current_contig_label = contig_label or str(contig)
             self._igv_dirty = True
-            if self.view_mode != "Global":
-                self._load_annotations(
-                    sample,
-                    contig,
-                    contigs=self.current_contigs,
-                    display_label=self.current_contig_label,
-                )
+            changed = self._select_contig(
+                sample,
+                contig,
+                contigs or [str(contig)],
+                contig_label or str(contig),
+                origin=SAMPLE_TREE,
+            )
+            if not changed:
+                self._render_annotations_for_selection()
         else:
-            self.current_sample = None
-            self.current_contig = None
-            self.current_contigs = None
-            self.current_contig_label = None
-            if self.view_mode != "Global":
-                column_builder = getattr(self, "_annotation_table_columns", None)
-                if callable(column_builder):
-                    self._set_table_model([], column_builder())
-                else:
-                    self._set_table_model([], ANNOTATION_COLUMNS_TO_SHOW)
+            self._select_contig(None, None, origin=SAMPLE_TREE)
 
     def _on_tree_double_clicked(self, item: QtWidgets.QTreeWidgetItem, col: int) -> None:
         # Card column was folded into the row; open the sample card on a
@@ -1496,12 +1608,48 @@ class TreeControllerMixin:
             return
         # Select the clicked row so it is obvious which one the menu acts on.
         self.tree.setCurrentItem(item)
-        # Right-clicking a contig row still targets its parent sample.
         sample_item = item
         while sample_item.parent() is not None:
             sample_item = sample_item.parent()
         sample = self._sample_from_tree_item(sample_item)
         if not sample:
+            return
+
+        payload = self._tree_item_payload(item)
+        contig = str(payload.get("contig") or "").strip()
+        if contig:
+            label = str(payload.get("contig_label") or contig).strip()
+            menu = QtWidgets.QMenu(self.tree)
+            header_action = menu.addAction(f"{sample} · {label}")
+            header_action.setEnabled(False)
+            menu.addSeparator()
+            annotations_action = menu.addAction("Open annotations")
+            context_action = menu.addAction("Open in Context view")
+            copy_action = menu.addAction(
+                "Copy contig IDs" if len(payload.get("contigs") or []) > 1 else "Copy contig ID"
+            )
+            menu.addSeparator()
+            card_action = menu.addAction("Open sample card")
+
+            chosen = menu.exec(self.tree.viewport().mapToGlobal(position))
+            if chosen is annotations_action:
+                self._open_tree_contig_payload(payload, mode="Contig")
+            elif chosen is context_action:
+                self._open_tree_contig_payload(payload, mode="Context")
+            elif chosen is copy_action:
+                members = [
+                    str(member).strip()
+                    for member in (payload.get("contigs") or [contig])
+                    if str(member).strip()
+                ]
+                QtWidgets.QApplication.clipboard().setText("\n".join(members or [contig]))
+                status = getattr(self, "status", None)
+                if isinstance(status, QtWidgets.QLabel):
+                    status.setText("Copied contig ID" if len(members) <= 1 else "Copied contig IDs")
+            elif chosen is card_action:
+                open_sample_card = getattr(self, "_open_sample_card_for_sample", None)
+                if callable(open_sample_card):
+                    open_sample_card(str(sample))
             return
 
         menu = QtWidgets.QMenu(self.tree)
@@ -1537,6 +1685,27 @@ class TreeControllerMixin:
             if callable(open_sample_card):
                 open_sample_card(str(sample))
 
+    def _open_tree_contig_payload(self, payload: Dict[str, Any], *, mode: str) -> None:
+        sample = str(payload.get("sample") or "").strip()
+        contig = str(payload.get("contig") or "").strip()
+        if not sample or not contig:
+            return
+        contigs = [
+            str(member).strip()
+            for member in (payload.get("contigs") or [])
+            if str(member).strip()
+        ]
+        display_label = str(payload.get("contig_label") or contig).strip()
+        self._igv_dirty = True
+        # One draw per panel for the selection and the mode switch together.
+        with self._batched_annotations_render():
+            changed = self._select_contig(sample, contig, contigs or [contig], display_label or contig, origin=SAMPLE_TREE)
+            if not changed:
+                self._render_annotations_for_selection()
+            # Switch the Annotations panel used last to the mode and show it
+            # (D3: no compute; plan 4.5: an open request plus the selection).
+            self.ctx.request(FocusPanel(ANNOTATIONS, params_tuple({"view_mode": mode})), origin=SAMPLE_TREE)
+
     def _expand_all_samples(self) -> None:
         self._tree_bulk_toggle_in_progress = True
         try:
@@ -1552,41 +1721,60 @@ class TreeControllerMixin:
             self._tree_bulk_toggle_in_progress = False
 
 
-    def _apply_tree_sample_hover(self, sample: Optional[str]) -> None:
-        if self._tree_hover_sample == sample:
+    def _tree_hover_samples(self) -> Tuple[str, ...]:
+        """The samples hovered in this window (bold in the tree)."""
+        ctx = getattr(self, "ctx", None)
+        hover = getattr(ctx, "hover_state", None)
+        return tuple(hover.samples) if hover is not None else ()
+
+    def _apply_tree_sample_hover(self, samples: Any) -> None:
+        """Bold the rows of the hovered samples (one, several or none)."""
+        if samples is None:
+            samples = ()
+        elif isinstance(samples, str):
+            samples = (samples,)
+        wanted = tuple(dict.fromkeys(str(s) for s in samples if s))
+        shown = tuple(getattr(self, "_tree_hover_shown", ()) or ())
+        if wanted == shown:
             return
-        if self._tree_hover_sample:
-            old_item = self._sample_tree_items.get(self._tree_hover_sample)
-            if old_item is not None:
-                old_font = old_item.font(0)
-                old_font.setBold(True)
+        base_fonts = getattr(self, "_tree_hover_base_fonts", None)
+        if not isinstance(base_fonts, dict):
+            base_fonts = {}
+            self._tree_hover_base_fonts = base_fonts
+        widgets = getattr(self, "_sample_tree_widgets", {})
+        keep = set(wanted)
+        for sample in shown:
+            if sample in keep:
+                continue
+            old_item = self._sample_tree_items.get(sample)
+            old_font = base_fonts.pop(sample, None)
+            if old_item is not None and isinstance(old_font, QtGui.QFont):
                 old_item.setFont(0, old_font)
-            old_widget = getattr(self, "_sample_tree_widgets", {}).get(self._tree_hover_sample)
+            old_widget = widgets.get(sample)
             if old_widget is not None and hasattr(old_widget, "set_highlighted"):
                 old_widget.set_highlighted(False)
-        self._tree_hover_sample = sample
-        if sample:
+        already = set(shown)
+        for sample in wanted:
+            if sample in already:
+                continue
             item = self._sample_tree_items.get(sample)
             if item is not None:
-                font = item.font(0)
+                base_font = QtGui.QFont(item.font(0))
+                base_fonts[sample] = base_font
+                font = QtGui.QFont(base_font)
                 font.setBold(True)
                 item.setFont(0, font)
-            widget = getattr(self, "_sample_tree_widgets", {}).get(sample)
+            widget = widgets.get(sample)
             if widget is not None and hasattr(widget, "set_highlighted"):
                 widget.set_highlighted(True)
+        self._tree_hover_shown = wanted
 
 
     def _sample_from_tree_item(self, item: Optional[QtWidgets.QTreeWidgetItem]) -> Optional[str]:
         if item is None:
             return None
-        if item.parent() is not None:
-            return None
-        payload_raw = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
-        if not payload_raw:
-            return None
-        try:
-            payload = json.loads(payload_raw)
-        except Exception:
-            return None
+        while item.parent() is not None:
+            item = item.parent()
+        payload = self._tree_item_payload(item)
         sample = payload.get("sample")
         return str(sample) if sample else None

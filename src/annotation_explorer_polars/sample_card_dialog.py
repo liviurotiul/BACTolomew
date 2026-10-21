@@ -9,7 +9,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import pandas as pd
 from PyQt6 import QtCore, QtWidgets
 
+from pipeline.UserDatabases import USER_LABEL_SUFFIX
+
 from .annotation_detail_dialog import _normalize_detail_value, _parse_float, _safe_value
+from .resistance_mutation import MUTATION_TAG, resistance_mutations
+from .windows.info_window import InfoWindow
 
 _HIDDEN_INTERNAL_MARKER_FIELDS = {
     "SubjectIdentifier",
@@ -99,7 +103,13 @@ class _AtbClassCard(QtWidgets.QFrame):
         layout.addWidget(support_label)
 
 
-class SampleCardDialog(QtWidgets.QDialog):
+class SampleCardDialog(InfoWindow):
+    """The sample card (an info window, plan section 5, D10): a read-only card
+    with its Summary and Raw tabs and nothing else. It has no commands, no
+    buttons that filter, reveal or open anything, and no hover output."""
+
+    COMMANDS = ()
+
     def __init__(
         self,
         parent: Optional[QtWidgets.QWidget],
@@ -125,9 +135,10 @@ class SampleCardDialog(QtWidgets.QDialog):
         self._sample_reference_hits = self._filter_sample_frame(self._reference_hits_df)
         self._sample_meta = self._sample_metadata_map()
         self._resistance_ann = self._build_resistance_annotations()
+        self._mutation_ann = self._build_mutation_annotations()
         self._atb_cards = self._build_atb_cards()
 
-        self.setWindowTitle("Sample Card")
+        self.set_card_title(f"Sample card: {self._sample}" if self._sample else "Sample card")
         self.resize(980, 720)
         self._build_ui()
 
@@ -188,68 +199,6 @@ class SampleCardDialog(QtWidgets.QDialog):
         self._update_descriptor_widths()
         return self._wrap_scroll(widget)
 
-    def _build_resistance_tab(self) -> QtWidgets.QWidget:
-        if self._resistance_ann.empty:
-            return self._build_empty_tab("No resistance-tagged annotations found for this sample.")
-
-        columns = [
-            ("Contig", "Contig"),
-            ("Gene", "Gene"),
-            ("Product", "Product"),
-            ("Predictors", "Predictors"),
-            ("MarkerDisplay", "Marker"),
-            ("Start", "Start"),
-            ("Stop", "Stop"),
-            ("Tags", "Tags"),
-        ]
-        table = self._build_table_from_df(self._resistance_ann, columns)
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(widget)
-        layout.addWidget(table)
-        return widget
-
-    def _build_markers_tab(self) -> QtWidgets.QWidget:
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(widget)
-
-        marker_group = QtWidgets.QGroupBox("Marker Hits")
-        marker_layout = QtWidgets.QVBoxLayout(marker_group)
-        if self._sample_marker_hits.empty:
-            marker_layout.addWidget(QtWidgets.QLabel("No marker hits found for this sample."))
-        else:
-            marker_columns = [
-                ("Contig", "Contig"),
-                ("Gene", "Gene"),
-                ("DB", "DB"),
-                ("Method", "Method"),
-                ("Product", "Product"),
-                ("Subject_coverage", "Coverage"),
-                ("Identity", "Identity"),
-                ("Bitscore", "Bitscore"),
-            ]
-            marker_table = self._build_table_from_df(
-                self._sample_marker_hits,
-                marker_columns,
-                metric_colors={
-                    "Subject_coverage": "#7bb6ff",
-                    "Identity": "#ff8f8f",
-                },
-            )
-            marker_layout.addWidget(marker_table)
-        layout.addWidget(marker_group)
-
-        reference_group = QtWidgets.QGroupBox("Reference Loci")
-        reference_layout = QtWidgets.QVBoxLayout(reference_group)
-        reference_table = self._build_reference_summary_table()
-        if reference_table is None:
-            reference_layout.addWidget(QtWidgets.QLabel("No reference locus hits found for this sample."))
-        else:
-            reference_layout.addWidget(reference_table)
-        layout.addWidget(reference_group)
-
-        layout.addStretch(1)
-        return self._wrap_scroll(widget)
-
     def _build_raw_tab(self) -> QtWidgets.QWidget:
         widget = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(widget)
@@ -259,15 +208,6 @@ class SampleCardDialog(QtWidgets.QDialog):
             json.dumps(self._build_raw_payload(), indent=2, ensure_ascii=False)
         )
         layout.addWidget(raw)
-        return widget
-
-    def _build_empty_tab(self, message: str) -> QtWidgets.QWidget:
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(widget)
-        label = QtWidgets.QLabel(message)
-        label.setWordWrap(True)
-        layout.addWidget(label)
-        layout.addStretch(1)
         return widget
 
     def _build_wrapped_value(self, value: str) -> QtWidgets.QLabel:
@@ -288,6 +228,8 @@ class SampleCardDialog(QtWidgets.QDialog):
             f"{self._count_unique_values(self._sample_ann, 'Contig')} contigs",
             f"{len(self._resistance_ann)} resistance-tagged annotations",
         ]
+        if not self._mutation_ann.empty:
+            parts.append(f"{len(self._mutation_symbols())} resistance mutations")
         if self._atb_cards:
             parts.append(f"{len(self._atb_cards)} ATB classes")
         if not self._sample_marker_hits.empty:
@@ -303,6 +245,7 @@ class SampleCardDialog(QtWidgets.QDialog):
             ("Contigs", str(self._count_unique_values(self._sample_ann, "Contig"))),
             ("Unique genes", str(self._count_unique_values(self._sample_ann, "Gene"))),
             ("Resistance genes", str(len(self._resistance_ann))),
+            ("Resistance mutations", self._mutation_summary()),
             ("ATB classes", str(len(self._atb_cards))),
             ("Marker hits", str(len(self._sample_marker_hits))),
             ("Marker DBs", str(self._count_unique_values(self._sample_marker_hits, "DB"))),
@@ -361,19 +304,56 @@ class SampleCardDialog(QtWidgets.QDialog):
             out = out.sort_values(sort_cols, na_position="last")
         return out.reset_index(drop=True)
 
-    def _build_atb_cards(self) -> List[Dict[str, Any]]:
-        source_df = self._sample_marker_hits
-        if source_df.empty or "ResistanceDrugClasses" not in source_df.columns:
-            return []
+    def _build_mutation_annotations(self) -> pd.DataFrame:
+        """CDS of this sample with an AMRFinderPlus point mutation (tag X)."""
+        df = self._sample_ann
+        if df.empty:
+            return pd.DataFrame(columns=list(df.columns))
+        mask = pd.Series(False, index=df.index)
+        if "ResistanceMutations" in df.columns:
+            mask |= df["ResistanceMutations"].fillna("").astype(str).str.strip() != ""
+        if "Tags" in df.columns:
+            mask |= df["Tags"].astype(str).str.upper().str.contains(MUTATION_TAG, regex=False, na=False)
+        return df[mask].reset_index(drop=True)
 
+    def _mutation_symbols(self) -> List[str]:
+        symbols: List[str] = []
+        for row in self._mutation_ann.to_dict("records"):
+            for symbol in resistance_mutations(row) or [_safe_value(row.get("Gene")) or "unnamed"]:
+                if symbol not in symbols:
+                    symbols.append(symbol)
+        return symbols
+
+    def _mutation_summary(self) -> str:
+        symbols = self._mutation_symbols()
+        return f"{len(symbols)} ({', '.join(symbols)})" if symbols else "0"
+
+    def _atb_sources(self) -> List[Tuple[List[str], Dict[str, Any]]]:
+        """(drug classes, support row) from the marker hits and from the resistance mutations."""
+        out: List[Tuple[List[str], Dict[str, Any]]] = []
+        source_df = self._sample_marker_hits
+        if not source_df.empty and "ResistanceDrugClasses" in source_df.columns:
+            for row in source_df.to_dict("records"):
+                classes = self._split_atb_classes(row.get("ResistanceDrugClasses"))
+                support_row = self._build_atb_support_row(row) if classes else None
+                if support_row is not None:
+                    out.append((classes, support_row))
+        for row in self._mutation_ann.to_dict("records"):
+            classes = self._split_atb_classes(row.get("ResistanceMutationClasses"))
+            for symbol in resistance_mutations(row) if classes else []:
+                out.append((classes, {
+                    "GeneSymbol": symbol,
+                    "MarkerAnnotation": "AMRFinderPlus mutation",
+                    "Subject_coverage": "",
+                    "Identity": "",
+                    "_CoverageSort": -1.0,
+                    "_IdentitySort": -1.0,
+                }))
+        return out
+
+    def _build_atb_cards(self) -> List[Dict[str, Any]]:
         grouped: Dict[str, Dict[str, Any]] = {}
-        for row in source_df.to_dict("records"):
-            classes = self._split_atb_classes(row.get("ResistanceDrugClasses"))
-            if not classes:
-                continue
-            support_row = self._build_atb_support_row(row)
-            if support_row is None:
-                continue
+        for classes, support_row in self._atb_sources():
             for class_name in classes:
                 display = self._format_atb_label(class_name)
                 if not display:
@@ -513,6 +493,8 @@ class SampleCardDialog(QtWidgets.QDialog):
         }
         if db in mapping:
             return mapping[db]
+        if db.endswith(USER_LABEL_SUFFIX):  # a user database keeps its name
+            return db
         return db.replace("_", " ")
 
     def _build_atb_support_row(self, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -674,37 +656,10 @@ class SampleCardDialog(QtWidgets.QDialog):
         ]
         return self._build_table_from_records(records, columns)
 
-    def _build_reference_summary_table(self) -> Optional[QtWidgets.QTableWidget]:
-        if self._sample_reference_hits.empty or "DB" not in self._sample_reference_hits.columns:
-            return None
-        summary = (
-            self._sample_reference_hits.groupby("DB", dropna=False)
-            .agg(Hits=("DB", "size"), Contigs=("Contig", "nunique"))
-            .reset_index()
-            .sort_values(["DB"], na_position="last")
-        )
-        columns = [
-            ("DB", "DB"),
-            ("Hits", "Hits"),
-            ("Contigs", "Contigs"),
-        ]
-        return self._build_table_from_df(summary, columns)
-
-    def _build_table_from_df(
-        self,
-        df: pd.DataFrame,
-        columns: Sequence[Tuple[str, str]],
-        metric_colors: Optional[Dict[str, str]] = None,
-    ) -> QtWidgets.QTableWidget:
-        available_columns = [(key, label) for key, label in columns if key in df.columns]
-        records = df[ [key for key, _ in available_columns] ].to_dict("records") if available_columns else []
-        return self._build_table_from_records(records, available_columns, metric_colors=metric_colors)
-
     def _build_table_from_records(
         self,
         records: Sequence[Dict[str, Any]],
         columns: Sequence[Tuple[str, str]],
-        metric_colors: Optional[Dict[str, str]] = None,
     ) -> QtWidgets.QTableWidget:
         table = QtWidgets.QTableWidget()
         table.setColumnCount(len(columns))
@@ -717,13 +672,9 @@ class SampleCardDialog(QtWidgets.QDialog):
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setStretchLastSection(True)
 
-        metric_colors = metric_colors or {}
         for row_idx, record in enumerate(records):
             for col_idx, (key, _label) in enumerate(columns):
                 value = record.get(key)
-                if key in metric_colors:
-                    self._set_metric_cell(table, row_idx, col_idx, value, metric_colors[key])
-                    continue
                 item = QtWidgets.QTableWidgetItem(_safe_value(value))
                 table.setItem(row_idx, col_idx, item)
 
@@ -748,6 +699,7 @@ class SampleCardDialog(QtWidgets.QDialog):
                 "contigs": self._count_unique_values(self._sample_ann, "Contig"),
                 "unique_genes": self._count_unique_values(self._sample_ann, "Gene"),
                 "resistance_annotations": len(self._resistance_ann),
+                "resistance_mutations": self._mutation_symbols(),
                 "atb_classes": len(self._atb_cards),
                 "marker_hits": len(self._sample_marker_hits),
                 "reference_hits": len(self._sample_reference_hits),
@@ -823,33 +775,6 @@ class SampleCardDialog(QtWidgets.QDialog):
             if _safe_value(value)
         }
         return len(values)
-
-    def _set_metric_cell(
-        self, table: QtWidgets.QTableWidget, row: int, col: int, value: Any, color: str
-    ) -> None:
-        metric = _parse_float(value)
-        if metric is None:
-            table.setItem(row, col, QtWidgets.QTableWidgetItem(""))
-            return
-        metric = max(0.0, min(100.0, metric))
-        bar = QtWidgets.QProgressBar()
-        bar.setRange(0, 100)
-        bar.setValue(int(round(metric)))
-        bar.setFormat(f"{metric:.1f}")
-        bar.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        bar.setTextVisible(True)
-        bar.setStyleSheet(
-            "QProgressBar {"
-            " border: 1px solid #d3dbe6;"
-            " border-radius: 7px;"
-            " background: #f3f6fa;"
-            " color: #223246;"
-            " text-align: center;"
-            "}"
-            f"QProgressBar::chunk {{ background-color: {color}; border-radius: 7px; }}"
-        )
-        table.setCellWidget(row, col, bar)
-        table.setItem(row, col, QtWidgets.QTableWidgetItem(f"{metric:.1f}"))
 
     def _make_descriptor_label(self, text: str) -> QtWidgets.QLabel:
         label = QtWidgets.QLabel(text)

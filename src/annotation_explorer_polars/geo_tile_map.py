@@ -1,9 +1,11 @@
-"""Native Qt slippy tile map — the "web map" look (real OSM/Carto tiles, smooth
+"""Native Qt slippy tile map - the "web map" look (real OSM/Carto tiles, smooth
 pan + deep zoom) with NO WebEngine and NO OpenGL, so it cannot crash or go black.
 
 Countries are drawn as a choropleth (fill + coloured outline) by sample count,
 overlaid on the tiles. Public API matches the other map views:
-update_data(points, countries, max_count) + highlight_sample(s).
+update_data(points, countries, max_count) + highlight_sample(s), and
+countryHovered(key) with the normalized name of the country with samples under
+the pointer ("" for none).
 """
 from __future__ import annotations
 
@@ -14,11 +16,12 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from PyQt6 import QtCore, QtGui, QtNetwork, QtWidgets
 
-from .geo_raster_map import _ASSETS, _count_color, _norm
+from .geo_raster_map import _ASSETS, _count_color, _norm, ring_bounds, small_country_near
+from .theme import COLORS
 
 TILE = 256
 BORDER_DARKEN = 135
-HILITE = "#f59e0b"
+HILITE = COLORS["hover"]
 INK = "#334155"
 TILE_URL = "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"
 ATTRIBUTION = "© OpenStreetMap  © CARTO"
@@ -82,6 +85,11 @@ def _load_world_lonlat() -> List[Tuple[str, List[List[Tuple[float, float]]]]]:
 
 
 class TileMapView(QtWidgets.QGraphicsView):
+    # The country under the pointer (normalized like the counts), "" when the
+    # pointer is over no country with samples or leaves the map. Emitted only
+    # when it changes.
+    countryHovered = QtCore.pyqtSignal(str)
+
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
         self._scene = QtWidgets.QGraphicsScene(self)
@@ -101,6 +109,9 @@ class TileMapView(QtWidgets.QGraphicsView):
         self._z = MIN_Z
         self._points: List[dict] = []
         self._country_counts: Dict[str, int] = {}
+        # Ring bounds of the drawn countries, for the hover slop of small
+        # ones (built on the first pointer move after a rebuild).
+        self._hit_rings: Optional[List[Tuple[str, QtCore.QRectF]]] = None
         self._sample_country: Dict[str, str] = {}
         self._max_count = 1
         self._highlight_countries: set[str] = set()
@@ -108,6 +119,8 @@ class TileMapView(QtWidgets.QGraphicsView):
         self._pending: set[Tuple[int, int, int]] = set()
         self._country_items: Dict[str, QtWidgets.QGraphicsPathItem] = {}
         self._did_initial = False
+        self._hover_key = ""
+        self.viewport().setMouseTracking(True)  # pointer moves without a button report the hovered country
 
         self._net = QtNetwork.QNetworkAccessManager(self)
         _CACHE.mkdir(parents=True, exist_ok=True)
@@ -156,6 +169,7 @@ class TileMapView(QtWidgets.QGraphicsView):
         self._tile_items.clear()
         self._pending.clear()
         self._country_items = {}
+        self._hit_rings = None
         n = TILE * (2 ** self._z)
         self._scene.setSceneRect(0, 0, n, n)
         self._place_countries()
@@ -200,6 +214,46 @@ class TileMapView(QtWidgets.QGraphicsView):
             item.setBrush(QtGui.QBrush(fill))
             item.setPen(pen)
             item.setZValue(6 if hot else 3)
+
+    # ---- pointer hover ----
+    def country_at(self, scene_pos: QtCore.QPointF) -> str:
+        """The country with samples at this scene point, "" for none (only
+        countries with samples have a path item)."""
+        for name, item in self._country_items.items():
+            path = item.path()
+            if path.controlPointRect().contains(scene_pos) and path.contains(scene_pos):
+                return name
+        return ""
+
+    def country_near(self, scene_pos: QtCore.QPointF) -> str:
+        """The country under the point, else a small one a few pixels away
+        (small_country_near)."""
+        name = self.country_at(scene_pos)
+        if name:
+            return name
+        if self._hit_rings is None:
+            self._hit_rings = ring_bounds([(n, item.path()) for n, item in self._country_items.items()])
+        return small_country_near(self._hit_rings, scene_pos, abs(float(self.transform().m11())))
+
+    def reset_hover(self) -> None:
+        """Forget the hovered country without emitting (the panel already
+        cleared its hover), so the next pointer move over it reports it again."""
+        self._hover_key = ""
+
+    def _set_hover_key(self, key: str) -> None:
+        if key != self._hover_key:
+            self._hover_key = key
+            self.countryHovered.emit(key)
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        super().mouseMoveEvent(event)
+        if event.buttons() == QtCore.Qt.MouseButton.NoButton:  # not while dragging the map
+            self._set_hover_key(self.country_near(self.mapToScene(event.position().toPoint())))
+
+    def viewportEvent(self, event: QtCore.QEvent) -> bool:
+        if event.type() == QtCore.QEvent.Type.Leave:  # the pointer left the map
+            self._set_hover_key("")
+        return super().viewportEvent(event)
 
     # ---- tiles ----
     def _schedule_load(self) -> None:

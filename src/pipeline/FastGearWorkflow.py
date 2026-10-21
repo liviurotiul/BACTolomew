@@ -1,26 +1,22 @@
 from __future__ import annotations
 
-import gzip
+import json
 import logging
-import os
 import shutil
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
+from pipeline.CoreAlignment import ORDERED_ALIGNMENT_REL, file_sha256, read_ordering_summary
 from pipeline.ToolEnv import configured_fastgear_settings
 
-_PANAROO_ALIGNMENT_CANDIDATES = (
-    "core_gene_alignment.aln",
-    "core_gene_alignment.fa",
-    "core_gene_alignment.fasta",
-    "core_gene_alignment.aln.gz",
-    "core_gene_alignment.fa.gz",
-    "core_gene_alignment.fasta.gz",
-)
+# fastGEAR reads the genome-ordered core alignment (the same file as Gubbins and the
+# core tree); fastgear/input.json records what it ran on, so it reruns when that changes.
+ALGORITHM_VERSION = 1
+INPUT_STAMP = "input.json"
 
 _SAMPLE_CLADE_COLUMNS = [
     "Sample",
@@ -54,61 +50,78 @@ def _ensure_fastgear_config(config: Mapping[str, Any] | None) -> dict[str, Any]:
     return settings
 
 
-def _resolve_panaroo_alignment(output_path: Path) -> Path:
-    panaroo_out = output_path / "panaroo" / "out"
-    if not panaroo_out.is_dir():
-        raise RuntimeError(f"Panaroo output directory not found: {panaroo_out}")
-    for name in _PANAROO_ALIGNMENT_CANDIDATES:
-        path = panaroo_out / name
-        if path.is_file():
-            return path
-    raise RuntimeError(
-        f"Panaroo core alignment not found under {panaroo_out} "
-        f"(looked for: {', '.join(_PANAROO_ALIGNMENT_CANDIDATES)})."
-    )
+# The MATLAB R2016a runtime links libncurses.so.5, which the tools image (Ubuntu 24.04)
+# lacks, so fastGEAR could not start. The launcher puts its working directory first on
+# LD_LIBRARY_PATH, so a link there to the image's ncurses 6 lets it load. Images built
+# from the current docker/Dockerfile carry the same link in the MCR folder.
+_NCURSES_COMPAT = ("libncurses.so.5", "/usr/lib/x86_64-linux-gnu/libncursesw.so.6")
 
 
-def _stage_alignment(src: Path, fastgear_dir: Path, logger: logging.Logger) -> Path:
-    input_dir = fastgear_dir / "input"
-    input_dir.mkdir(parents=True, exist_ok=True)
-    staged = input_dir / "core_gene_alignment.aln"
-    if src.suffix == ".gz":
-        with gzip.open(src, "rt", encoding="utf-8", errors="ignore") as fin, staged.open(
-            "w", encoding="utf-8"
-        ) as fout:
-            for line in fin:
-                fout.write(line)
-        logger.info(f"Prepared fastGEAR input alignment: {src.name} -> {staged}")
-    else:
-        shutil.copy2(src, staged)
-        logger.info(f"Prepared fastGEAR input alignment: {src.name} -> {staged}")
-    return staged
+def _link_ncurses_compat(workdir: Path) -> None:
+    link = workdir / _NCURSES_COMPAT[0]
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(_NCURSES_COMPAT[1])
 
 
-def _docker_client_available(docker_bin: str) -> bool:
+def _image_identity(ctx) -> str | None:
+    """Docker (or Podman) image id, or the Singularity image's path, size and mtime."""
+    if ctx.runtime == "singularity" and ctx.sif_path:
+        try:
+            st = Path(ctx.sif_path).stat()
+        except OSError:
+            return None
+        return f"{ctx.sif_path}:{st.st_size}:{st.st_mtime_ns}"
+    from pipeline.ContainerRuntime import docker_image_info
+    from pipeline.ToolEnv import oci_exe
+
+    info = docker_image_info(ctx.image, oci_exe(ctx))
+    return (info or {}).get("id") or None
+
+
+def _fastgear_stamp(output_path: Path, settings: Mapping[str, Any], ctx) -> dict[str, Any]:
+    alignment = output_path / ORDERED_ALIGNMENT_REL
+    ordering = read_ordering_summary(output_path) or {}
+    specs = Path(str(settings.get("specs_file") or ""))
+    return {
+        "algorithm_version": ALGORITHM_VERSION,
+        "input_path": str(alignment),
+        "input_sha256": (ordering.get("output") or {}).get("sha256"),
+        "settings": {
+            key: settings.get(key) for key in ("launcher", "mcr_root", "specs_file", "extra_args")
+        },
+        # The default specs file lives in the image, whose identity covers it.
+        "specs_sha256": file_sha256(specs) if specs.is_file() else None,
+        "image": _image_identity(ctx),
+    }
+
+
+def fastgear_engine(ctx) -> str:
+    """The container runtime fastGEAR runs under: the run's, or for a native run the
+    docker or podman it falls back to."""
+    from pipeline.ToolEnv import native_container_runtime
+
+    return ctx.runtime if ctx.runtime != "native" else native_container_runtime()
+
+
+def fastgear_reuse_issue(output_path: Path, fastgear_config: Mapping[str, Any] | None = None) -> str | None:
+    """Why the existing fastGEAR output cannot be reused (None when it can)."""
+    from pipeline.ToolEnv import current_container_context, make_container_context
+
+    output_path = Path(output_path)
     try:
-        res = subprocess.run(
-            [docker_bin, "--version"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        return False
-    return res.returncode == 0
-
-
-def _docker_image_available(docker_bin: str, image: str) -> bool:
-    try:
-        res = subprocess.run(
-            [docker_bin, "image", "inspect", image],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        return False
-    return res.returncode == 0
+        recorded = json.loads((output_path / "fastgear" / INPUT_STAMP).read_text(encoding="utf-8"))
+    except Exception:
+        return "no input stamp"
+    settings = _as_settings(fastgear_config)
+    ctx = current_container_context() or make_container_context(output_dir=output_path)
+    current = _fastgear_stamp(output_path, settings, ctx)
+    if recorded.get("input_sha256") != current["input_sha256"] or not current["input_sha256"]:
+        return "input alignment changed"
+    for key in ("algorithm_version", "settings", "specs_sha256", "image"):
+        if recorded.get(key) != current[key]:
+            return f"{key.replace('_', ' ')} changed"
+    return None
 
 
 def _format_subprocess_error(result: subprocess.CompletedProcess[str]) -> str:
@@ -255,23 +268,33 @@ def run_fastgear_clades(
     cache_dir = fastgear_dir / "mcr_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    alignment_src = _resolve_panaroo_alignment(output_path)
-    staged_alignment = _stage_alignment(alignment_src, fastgear_dir, logger)
+    alignment = output_path / ORDERED_ALIGNMENT_REL
+    if not alignment.is_file():
+        raise RuntimeError("The ordered core alignment (step core_alignment) is required before fastGEAR.")
+    # Outputs of an earlier run (and the old staged input copy) must not survive a rerun.
+    for name in ("input", "output", INPUT_STAMP, "fastgear_res.mat", "fastgear_res_snpData.mat", "sample_clades.tsv"):
+        stale = fastgear_dir / name
+        if stale.is_dir():
+            shutil.rmtree(stale, ignore_errors=True)
+        else:
+            stale.unlink(missing_ok=True)
     result_mat_out = fastgear_dir / "fastgear_res.mat"
+    _link_ncurses_compat(fastgear_dir)
 
     # fastGEAR (MATLAB MCR) now lives in the unified tools image at /opt. Run it with the
-    # run's container runtime and identity-mounted host paths (native falls back to docker,
+    # run's container runtime and identity-mounted host paths (native falls back to docker or podman,
     # since fastGEAR cannot run outside a container).
     ctx = current_container_context() or make_container_context(output_dir=output_path)
     cmd = container_image_cmd(
         ctx,
-        [launcher, mcr_root, str(staged_alignment), str(result_mat_out), specs_file, *extra_args],
+        [launcher, mcr_root, str(alignment), str(result_mat_out), specs_file, *extra_args],
         workdir=str(fastgear_dir),
         extra_env={"HOME": str(cache_dir), "MCR_CACHE_ROOT": str(cache_dir)},
         extra_binds=[fastgear_dir],
     )
+    engine = fastgear_engine(ctx)
 
-    logger.info("Running fastGEAR (%s).", ctx.runtime if ctx.runtime != "native" else "docker")
+    logger.info("Running fastGEAR (%s).", engine)
     logger.info("CMD: " + " ".join(cmd))
     result = subprocess.run(
         cmd,
@@ -282,7 +305,7 @@ def run_fastgear_clades(
     if result.returncode != 0:
         details = _format_subprocess_error(result)
         raise RuntimeError(
-            f"fastGEAR Docker execution failed with exit code {result.returncode}"
+            f"fastGEAR {engine} execution failed with exit code {result.returncode}"
             + (f": {details}" if details else ".")
         )
 
@@ -299,6 +322,8 @@ def run_fastgear_clades(
     sample_clades_tsv = fastgear_dir / "sample_clades.tsv"
     normalized.to_csv(sample_clades_tsv, sep="\t", index=False)
     logger.info(f"Normalized fastGEAR sample clades: {sample_clades_tsv}")
+    stamp_path = fastgear_dir / INPUT_STAMP
+    stamp_path.write_text(json.dumps(_fastgear_stamp(output_path, settings, ctx), indent=2), encoding="utf-8")
 
     return FastGearResult(
         sample_clades_tsv=sample_clades_tsv,
@@ -309,6 +334,8 @@ def run_fastgear_clades(
 
 __all__ = [
     "FastGearResult",
+    "fastgear_engine",
+    "fastgear_reuse_issue",
     "parse_lineage_information",
     "run_fastgear_clades",
     "validate_sample_clades_tsv",

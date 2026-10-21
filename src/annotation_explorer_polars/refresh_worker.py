@@ -1,36 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import traceback
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable
 
-import polars as pl
 from PyQt6 import QtCore
-
-
-@dataclass(frozen=True)
-class RefreshSnapshot:
-    token: int
-    sample_query: Optional[str]
-    meta_filters: Dict[str, List[str]]
-    sample_subset_samples: List[str]
-    ann_filters: Dict[str, Any]
-    hide_empty_contigs: bool
-    view_mode: str
-
-
-@dataclass
-class RefreshPayload:
-    token: int
-    ann_filters: Dict[str, Any]
-    allowed_samples: List[str]
-    panel_allowed_samples: List[str]
-    filtered_ann_pl: pl.DataFrame
-    meta_for_tree_pl: pl.DataFrame
-    contig_records: Dict[str, List[Dict[str, Any]]]
-    filtered_counts: Dict[str, int]
-    tree_allowed_samples: List[str]
-    stats_text: str
 
 
 class RefreshWorkerSignals(QtCore.QObject):
@@ -39,7 +12,13 @@ class RefreshWorkerSignals(QtCore.QObject):
 
 
 class RefreshWorker(QtCore.QRunnable):
-    def __init__(self, token: int, compute: Callable[[], RefreshPayload]) -> None:
+    """Runs one compute on a pool thread and reports it with its token.
+
+    The filter query and its result types (``FilterState``, ``AppliedResult``)
+    live in model/filter_state.py, so the model package loads no Qt module.
+    """
+
+    def __init__(self, token: int, compute: Callable[[], Any]) -> None:
         super().__init__()
         self._token = int(token)
         self._compute = compute

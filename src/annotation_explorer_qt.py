@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BACTolomew Annotation Explorer")
@@ -12,4 +13,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     from annotation_explorer_polars.app import main
 
-    main(dev_mode=bool(args.dev))
+    sys.exit(main(dev_mode=bool(args.dev)))

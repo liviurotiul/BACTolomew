@@ -1,7 +1,85 @@
 from __future__ import annotations
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
+
+GENOME_FASTA_SUFFIXES = (".fasta", ".fa", ".fna")
+# Sample names are tip names: IQ-TREE rewrites every character outside
+# [A-Za-z0-9_./|-] to "_" (and Newick cannot hold spaces, ( ) [ ] , : ; or quotes).
+NEWICK_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9_./|-]")
+
+
+def genome_sample_key(path: Any) -> str:
+    """Sample name of a genome file with ".gz" and one FASTA suffix stripped.
+
+    "a.fna", "a.fasta" and "a.fna.gz" all give "a". The pipeline itself names a
+    sample by Path.stem, so find_genome_name_collisions checks both names.
+    """
+    name = Path(str(path)).name
+    if name.lower().endswith(".gz"):
+        name = name[:-3]
+    lower = name.lower()
+    for suffix in GENOME_FASTA_SUFFIXES:
+        if lower.endswith(suffix) and len(name) > len(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def _resolved(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def genome_name_keys(path: Any) -> tuple[str, set[str]]:
+    """(identity, sample names) of one genome file, as the pipeline will see it.
+
+    DataInput resolves symlinks before naming samples, so both names come from the
+    resolved file: its Path.stem and its genome_sample_key. The identity is the
+    resolved path, so the same file given twice is recognized.
+    """
+    real = _resolved(Path(str(path)).expanduser())
+    return str(real), {genome_sample_key(real), real.stem}
+
+
+def find_genome_name_collisions(paths: Iterable[Any]) -> Dict[str, List[Path]]:
+    """Map each sample name shared by two or more genome files to those files.
+
+    A collision is two different files with the same Path.stem (the sample name the
+    pipeline uses for every per-sample output) or the same genome_sample_key (the
+    name after stripping ".gz" and the FASTA suffix), both taken from the resolved
+    file (symlinks followed, as DataInput does). The same file given twice is not a
+    collision. Members are listed as given.
+    """
+    seen: set[str] = set()
+    by_key: Dict[str, List[Path]] = {}
+    for item in paths:
+        p = Path(str(item)).expanduser()
+        ident, keys = genome_name_keys(p)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        for key in keys:
+            by_key.setdefault(key, []).append(p)
+    return {
+        k: sorted(v, key=str)
+        for k, v in sorted(by_key.items())
+        if len(v) >= 2
+    }
+
+
+def format_genome_name_collisions(collisions: Mapping[str, List[Path]]) -> str:
+    lines = [
+        f"{name}: " + ", ".join(str(p) for p in members)
+        for name, members in collisions.items()
+    ]
+    return (
+        "genomes: sample names (file names without .gz and the FASTA suffix) must be "
+        "unique; rename or drop one file of each group:\n  " + "\n  ".join(lines)
+    )
+
 
 @dataclass
 class DataInput:
@@ -23,6 +101,8 @@ class DataInput:
     mobsuite_config: Dict[str, Any] = field(default_factory=dict)
     chewbbaca_config: Dict[str, Any] = field(default_factory=dict)
     assembly_qc_config: Dict[str, Any] = field(default_factory=dict)
+    # Overrides of the config `phylo` section (pipeline.ToolEnv.configured_phylo_settings).
+    phylo_config: Dict[str, Any] = field(default_factory=dict)
     run_id: Optional[str] = None
 
     def __post_init__(self):
@@ -31,8 +111,20 @@ class DataInput:
         self.diamond = True
 
         self.genomes = self._norm_paths(self.genomes, name="genomes", must_exist=True, must_be_file=True, allow_empty=False)
-        self.marker_sequences = self._norm_paths(self.marker_sequences, name="marker_sequences", must_exist=True, must_be_file=True, allow_empty=False)
-        self.reference_locus_sequences = self._norm_paths(self.reference_locus_sequences, name="reference_locus_sequences", must_exist=True, must_be_file=True, allow_empty=False)
+        genome_collisions = find_genome_name_collisions(self.genomes)
+        if genome_collisions:
+            raise ValueError(format_genome_name_collisions(genome_collisions))
+        bad_names = sorted({p.stem for p in self.genomes if NEWICK_UNSAFE_NAME.search(p.stem)})
+        if bad_names:
+            raise ValueError(
+                "genomes: sample names (file names without the FASTA suffix) may only contain "
+                "letters, digits and _ . - | (tree tools rewrite other characters); rename: "
+                + ", ".join(bad_names)
+            )
+        # The marker and compound databases are optional: a run searches the installed ones
+        # (none skips that search) and records the others as not installed.
+        self.marker_sequences = self._norm_paths(self.marker_sequences, name="marker_sequences", must_exist=True, must_be_file=True, allow_empty=True)
+        self.reference_locus_sequences = self._norm_paths(self.reference_locus_sequences, name="reference_locus_sequences", must_exist=True, must_be_file=True, allow_empty=True)
         self.snippy_reference = self._norm_optional_path(self.snippy_reference, name="snippy_reference")
 
         self.output = self._norm_dir(self.output, name="output", create=True)
@@ -52,11 +144,6 @@ class DataInput:
         self.diamond = True
         self.bakta = True
 
-        if not self.marker_sequences:
-            raise ValueError("marker_sequences: at least one path required")
-        if not self.reference_locus_sequences:
-            raise ValueError("reference_locus_sequences: at least one path required")
-
         m_stems = [p.stem for p in self.marker_sequences]
         r_stems = [p.stem for p in self.reference_locus_sequences]
         self._ensure_unique_stems(m_stems, "marker_sequences")
@@ -73,6 +160,7 @@ class DataInput:
         self.mobsuite_config = self._norm_json_map(self.mobsuite_config, "mobsuite_config")
         self.chewbbaca_config = self._norm_json_map(self.chewbbaca_config, "chewbbaca_config")
         self.assembly_qc_config = self._norm_json_map(self.assembly_qc_config, "assembly_qc_config")
+        self.phylo_config = self._norm_json_map(self.phylo_config, "phylo_config")
 
         if self.run_id is not None:
             run_id = str(self.run_id).strip()

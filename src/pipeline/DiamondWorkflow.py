@@ -1,18 +1,78 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import time
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Iterable
+from typing import Collection, Iterable
 
 import pandas as pd
 
 from pipeline.FastaUtils import prepare_query_fasta
+from pipeline.RunSteps import ProgressCallback, report_progress
 from pipeline.ToolEnv import tool_cmd
 from pipeline.Utils import CATEGORIES
+
+
+def dmnd_stamp_path(dmnd: Path) -> Path:
+    return Path(dmnd).parent / f"{Path(dmnd).name}.source.json"
+
+
+def _fasta_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with Path(path).open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def write_dmnd_stamp(fasta: Path, dmnd: Path) -> None:
+    """Record which FASTA content a .dmnd was built from."""
+    fasta = Path(fasta)
+    stat = fasta.stat()
+    stamp = {
+        "fasta": str(fasta),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "sha256": _fasta_sha256(fasta),
+    }
+    dmnd_stamp_path(dmnd).write_text(json.dumps(stamp, indent=2) + "\n", encoding="utf-8")
+
+
+def dmnd_is_current(fasta: Path, dmnd: Path) -> bool:
+    """True when ``dmnd`` exists and was built from the current content of ``fasta``.
+
+    With a stamp (written by build_diamond_db_for_files) the FASTA content is compared; size
+    and mtime unchanged short-circuit the hash. Without one (older runs) the .dmnd must be
+    at least as new as the FASTA, so a marker database rebuilt in DB/seq/markers after the
+    run makes the run's .dmnd stale.
+    """
+    fasta, dmnd = Path(fasta), Path(dmnd)
+    try:
+        if not dmnd.is_file() or dmnd.stat().st_size == 0 or not fasta.is_file():
+            return False
+        stat = fasta.stat()
+        stamp_path = dmnd_stamp_path(dmnd)
+        if stamp_path.is_file():
+            stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
+            if stamp.get("size") == stat.st_size and stamp.get("mtime_ns") == stat.st_mtime_ns:
+                return True
+            return stamp.get("size") == stat.st_size and stamp.get("sha256") == _fasta_sha256(fasta)
+        return dmnd.stat().st_mtime_ns >= stat.st_mtime_ns
+    except (OSError, ValueError):
+        return False
+
+
+def hit_tsv_is_current(tsv: Path, db: Path) -> bool:
+    """A DIAMOND hit TSV is reusable only when it is not older than the database it searched."""
+    try:
+        return Path(tsv).is_file() and Path(tsv).stat().st_mtime_ns >= Path(db).stat().st_mtime_ns
+    except OSError:
+        return False
 
 
 def run_diamond_annotations(
@@ -23,14 +83,27 @@ def run_diamond_annotations(
     threads: int = 1,
     max_target_seqs: int = 1,
     sanitize: bool = True,
+    force: bool = False,
+    progress: ProgressCallback = None,
 ):
+    """Search each genome/query FASTA against each DB, one TSV per pair.
+
+    progress(done, total) is called after each genome/query FASTA (all its DBs).
+
+    An existing TSV is kept when it is not older than its DB, unless force is set:
+    the caller then knows the query changed (for example new AnnotationIDs) and the
+    old hits must not be reused.
+    """
     annotation_dir = output_path
     annotation_dir.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(dir=output_path) as tdir:
         tdir = Path(tdir)
 
-        for genome in genome_files:
+        genome_files = list(genome_files)
+        db_files = list(db_files)
+        for done, genome in enumerate(genome_files):
+            report_progress(progress, done, len(genome_files))
             if not genome.exists() or not genome.is_file():
                 logger.warning(f"Skipping missing genome file: {genome}")
                 continue
@@ -43,9 +116,13 @@ def run_diamond_annotations(
                     continue
 
                 out_file = annotation_dir / f"{genome.stem}-vs-{db.stem}.tsv"
-                if out_file.exists():
+                if not force and hit_tsv_is_current(out_file, db):
                     logger.info(f"Skipping existing annotation: {out_file.name}")
                     continue
+                if force and out_file.exists():
+                    logger.info(f"Recomputing {out_file.name}: the query changed since the hits were written.")
+                elif out_file.exists():
+                    logger.info(f"Recomputing {out_file.name}: {db.name} is newer than the hits.")
 
                 with tempfile.TemporaryDirectory(dir=annotation_dir) as tmpdir:
                     tmp_out = Path(tmpdir) / out_file.name
@@ -85,7 +162,13 @@ def run_diamond_annotations(
                         shutil.move(str(tmp_out), out_file)
                         logger.info(f"Annotation written: {out_file}")
                     except subprocess.CalledProcessError as e:
-                        logger.error(f"DIAMOND failed: {genome.name} vs {db.name} — {e}")
+                        logger.error(f"DIAMOND failed: {genome.name} vs {db.name}: {e}")
+                        # The old TSV was judged stale above; never leave it to be read or
+                        # certified by the caller's query stamp as if this search had run.
+                        if out_file.exists():
+                            out_file.unlink()
+                            logger.error(f"Removed stale {out_file.name}; rerun the step to search it again.")
+        report_progress(progress, len(genome_files), len(genome_files))
 
 
 def build_diamond_db_for_files(
@@ -110,10 +193,12 @@ def build_diamond_db_for_files(
         db_name = fasta.stem
         final_db = db_output_dir / f"{db_name}.dmnd"
 
-        if final_db.exists():
+        if dmnd_is_current(fasta, final_db):
             logger.info(f"Skipping {db_name}: DB already exists.")
             created.append(final_db)
             continue
+        if final_db.exists():
+            logger.info(f"Rebuilding {db_name}: {fasta.name} changed since the DB was built.")
 
         with tempfile.TemporaryDirectory(dir=db_output_dir) as tmpdir:
             tmp_db = Path(tmpdir) / f"{db_name}.dmnd"
@@ -127,6 +212,7 @@ def build_diamond_db_for_files(
             try:
                 subprocess.run(cmd, check=True)
                 shutil.move(str(tmp_db), final_db)
+                write_dmnd_stamp(fasta, final_db)
                 logger.info(f"Created DIAMOND DB: {final_db}")
                 created.append(final_db)
             except subprocess.CalledProcessError as e:
@@ -134,7 +220,19 @@ def build_diamond_db_for_files(
     return created
 
 
-def parse_diamond_hit_file(path: Path, category: str, logger: logging.Logger | None = None) -> pd.DataFrame:
+def hit_method(db_name: str, full_names: Collection[str] = ()) -> str:
+    """The Method of a database's hits: the name before its first '_' for the built-in
+    catalog names of older runs ('CARD_AMR' -> 'CARD', 'AMRF_core-AMR' -> 'AMRF'), the
+    whole name for a user database (``full_names``, pipeline.UserDatabases)."""
+    return db_name if db_name in full_names else db_name.split("_")[0]
+
+
+def parse_diamond_hit_file(
+    path: Path,
+    category: str,
+    logger: logging.Logger | None = None,
+    full_names: Collection[str] = (),
+) -> pd.DataFrame:
     empty = pd.DataFrame(columns=[
         "Sample", "Contig", "Start", "Stop", "Strand",
         "Identity", "Evalue", "Bitscore", "Method", "MarkerCategory", "Product",
@@ -165,7 +263,7 @@ def parse_diamond_hit_file(path: Path, category: str, logger: logging.Logger | N
         method = name_parts[1] if len(name_parts) > 1 else "unknown"
 
         df["Sample"] = sample
-        df["Method"] = method.split("_")[0]
+        df["Method"] = hit_method(method, full_names)
         df["MarkerCategory"] = category if category in CATEGORIES else None
 
         df["Contig"] = df["Query"].astype(str).str.extract(r"contig_(\d+)", expand=False)
@@ -185,14 +283,19 @@ def parse_diamond_hit_file(path: Path, category: str, logger: logging.Logger | N
         return empty
 
 
-def load_diamond_tsvs(paths: list[Path], categories, logger: logging.Logger | None = None) -> pd.DataFrame:
+def load_diamond_tsvs(
+    paths: list[Path],
+    categories,
+    logger: logging.Logger | None = None,
+    full_names: Collection[str] = (),
+) -> pd.DataFrame:
     cols = ["Sample", "Contig", "Start", "Stop", "Strand",
             "Identity", "Evalue", "Bitscore", "Method", "MarkerCategory", "Product"]
 
     frames = []
     for p in paths:
         try:
-            df = parse_diamond_hit_file(p, categories[p.stem.split("-vs-")[1]], logger)
+            df = parse_diamond_hit_file(p, categories[p.stem.split("-vs-")[1]], logger, full_names)
             if df is not None and len(df):
                 frames.append(df)
         except Exception:
@@ -271,9 +374,10 @@ def load_diamond_tsvs(paths: list[Path], categories, logger: logging.Logger | No
     return out[cols]
 
 
-def read_annotations(path: Path) -> pd.DataFrame:
+def read_annotations(path: Path, full_names: Collection[str] = ()) -> pd.DataFrame:
     """
-    Read DIAMOND annotation TSVs produced for Bakta annotations vs MarkerSequence DBs.
+    Read DIAMOND annotation TSVs produced for Bakta annotations vs MarkerSequence DBs
+    (Method: `hit_method`, the whole name for the user databases in ``full_names``).
     """
     path = Path(path)
 
@@ -343,12 +447,8 @@ def read_annotations(path: Path) -> pd.DataFrame:
             after_vs = stem.split("-vs-", 1)[1] if "-vs-" in stem else stem
 
             parts = after_vs.split("_")
-            if len(parts) >= 2:
-                category = parts[1]
-                method = parts[0]
-            else:
-                method = after_vs
-                category = None
+            category = parts[1] if len(parts) >= 2 and after_vs not in full_names else None
+            method = hit_method(after_vs, full_names)
 
             marker_cat = category if category in CATEGORIES else None
 
@@ -429,8 +529,12 @@ def collapse_diamond_annotations(df: pd.DataFrame) -> pd.DataFrame:
 
 
 __all__ = [
+    "dmnd_is_current",
+    "hit_tsv_is_current",
+    "write_dmnd_stamp",
     "run_diamond_annotations",
     "build_diamond_db_for_files",
+    "hit_method",
     "parse_diamond_hit_file",
     "load_diamond_tsvs",
     "read_annotations",

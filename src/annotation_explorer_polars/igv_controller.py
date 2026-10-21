@@ -1,29 +1,16 @@
 from __future__ import annotations
 
 import bisect
-import json
-import re
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-import polars as pl
-from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui
 
-from .alignment_dialog import AlignmentDialog
-from .annotation_detail_dialog import AnnotationDetailDialog
-from .annotation_table import AnnotationTableModel, DetailsDelegate, TagsDelegate
-from .constants import ANNOTATION_COLUMNS_TO_SHOW, MISSING_FILTER_TOKEN
-from .geo_view import GeoMapView
-from .igv_view import GeneSegment, IgvTrackView
-from .metadata_filter_dialog import MetadataValueDialog
-from .panaroo_views import (
-    EntropyTrackTab,
-    PanCoreAccessoryTab,
-    SimilarityMapTab,
-    StructPresenceHeatmapTab,
-)
+from .annotation_table import AnnotationTableModel
+from .context_model import gene_type_fill
+from .igv_view import BREAK, GAP, LOCUS, GeneSegment
+from .model.run_data import clean_text
 
 
 class IgvControllerMixin:
@@ -50,7 +37,7 @@ class IgvControllerMixin:
             self.igv_view.clear()
             _clear_igv_state()
             return
-        if not getattr(self, "_base_allowed_samples", None):
+        if self.ctx.result is None or not self.ctx.result.allowed_samples:
             self.igv_view.clear()
             _clear_igv_state()
             return
@@ -65,19 +52,19 @@ class IgvControllerMixin:
         if not contig_values and contig_name:
             contig_values = [contig_name]
         is_grouped_plasmid = len(contig_values) > 1
-        contig_df = self._subset_annotations_pd("base", sample=sample_name, contig=contig_name, contigs=contig_values)
+        contig_df = self.engine.result_annotations(self.ctx.result, hits=False, sample=sample_name, contig=contig_name, contigs=contig_values)
         ref_contig_df = pd.DataFrame()
         if (
-            self.ref_df is not None
-            and not self.ref_df.empty
-            and {"Sample", "Contig"}.issubset(self.ref_df.columns)
+            self.run.ref_df is not None
+            and not self.run.ref_df.empty
+            and {"Sample", "Contig"}.issubset(self.run.ref_df.columns)
         ):
-            sample_series = self.ref_df["Sample"].astype(str).str.strip()
-            contig_series = self.ref_df["Contig"].astype(str).str.strip()
+            sample_series = self.run.ref_df["Sample"].astype(str).str.strip()
+            contig_series = self.run.ref_df["Contig"].astype(str).str.strip()
             if is_grouped_plasmid:
-                ref_contig_df = self.ref_df[(sample_series == sample_name) & (contig_series.isin(contig_values))]
+                ref_contig_df = self.run.ref_df[(sample_series == sample_name) & (contig_series.isin(contig_values))]
             else:
-                ref_contig_df = self.ref_df[(sample_series == sample_name) & (contig_series == contig_name)]
+                ref_contig_df = self.run.ref_df[(sample_series == sample_name) & (contig_series == contig_name)]
 
         if contig_df.empty and ref_contig_df.empty:
             self.igv_view.clear()
@@ -190,16 +177,16 @@ class IgvControllerMixin:
                     merged_focus[-1] = (prev_s, max(prev_e, e))
             normalized_focus = merged_focus
 
+        # The applied annotation filters decide the hit arrows (D3: never the
+        # sample search), so they key the drawn track too.
+        applied = self._applied_filters()
         filter_signature = (
-            self.gene_query.text().strip().lower(),
-            self.product_query.text().strip().lower(),
-            str(self.molecule_filter_box.currentData() or "").strip().lower()
-            if hasattr(self, "molecule_filter_box")
-            else "",
-            tuple(sorted(self._selected_predictors())),
-            tuple(sorted(self._selected_tags())),
-            int(self.hide_hypo_chk.isChecked()),
-            self.sample_query.text().strip().lower() if self.view_mode == "Global" else "",
+            applied.gene.lower(),
+            applied.product.lower(),
+            applied.molecule,
+            tuple(sorted(applied.predictors)),
+            tuple(sorted(applied.tags)),
+            int(applied.hide_hypothetical),
             int(highlight_bp) if highlight_bp is not None else 0,
         )
         key = (
@@ -301,8 +288,8 @@ class IgvControllerMixin:
                     end=mapped_end,
                     strand="+",
                     label=f"break after {member_name}",
-                    color=QtGui.QColor("#cbd5e1"),
                     lane=0,
+                    kind=BREAK,
                 )
             )
         for _, row in contig_df.iterrows():
@@ -329,22 +316,11 @@ class IgvControllerMixin:
             product = "" if pd.isna(prod_val) else str(prod_val).strip()
             label = gene or product or "gene"
             strand = str(row.get("Strand") or "+").strip()
-            tag_val = row.get("Tags")
-            tags = "" if pd.isna(tag_val) else str(tag_val)
-            color = QtGui.QColor("#90caf9")
+            row_data = row.to_dict()
+            # The neighborhood plot's gene type colors (a resistance mutation
+            # reads as AMR).
+            color = QtGui.QColor(gene_type_fill(row_data))
             lane = 2 if strand == "-" else 1
-            if "A" in tags:
-                color = QtGui.QColor("#ef9a9a")
-            elif "B" in tags:
-                color = QtGui.QColor("#a5d6a7")
-            elif "V" in tags:
-                color = QtGui.QColor("#ce93d8")
-            elif "M" in tags:
-                color = QtGui.QColor("#ffcc80")
-            elif "P" in tags:
-                color = QtGui.QColor("#9ec3ff")
-            elif "I" in tags:
-                color = QtGui.QColor("#ffe082")
             mapped_start = int(round(map_pos(start_i)))
             mapped_end = int(round(map_pos(end_i)))
             segments.append(
@@ -355,7 +331,7 @@ class IgvControllerMixin:
                     label=label,
                     color=color,
                     lane=lane,
-                    row_data=row.to_dict(),
+                    row_data=row_data,
                 )
             )
 
@@ -395,8 +371,8 @@ class IgvControllerMixin:
                     end=mapped_end,
                     strand="+",
                     label=label,
-                    color=QtGui.QColor("#ffe082"),
                     lane=0,
+                    kind=LOCUS,
                 )
             )
 
@@ -423,8 +399,8 @@ class IgvControllerMixin:
                         end=vis_end,
                         strand="+",
                         label=f"({bp_count}) bp context",
-                        color=QtGui.QColor("#bfc5d2"),
-                        lane=1,
+                            lane=1,
+                        kind=GAP,
                     )
                 )
                 segments.append(
@@ -433,8 +409,8 @@ class IgvControllerMixin:
                         end=vis_end,
                         strand="+",
                         label="",
-                        color=QtGui.QColor("#cdd2dc"),
-                        lane=0,
+                            lane=0,
+                        kind=GAP,
                     )
                 )
                 segments.append(
@@ -443,8 +419,8 @@ class IgvControllerMixin:
                         end=vis_end,
                         strand="-",
                         label="",
-                        color=QtGui.QColor("#cdd2dc"),
-                        lane=2,
+                            lane=2,
+                        kind=GAP,
                     )
                 )
 
@@ -459,10 +435,8 @@ class IgvControllerMixin:
                     hit_bp_positions.append(int(round(map_pos(bp))))
         else:
             show_hit_arrows = self._has_active_annotation_filter()
-            if self.view_mode == "Global" and self.sample_query.text().strip():
-                show_hit_arrows = True
-            if show_hit_arrows and self._filtered_ann_pl is not None and not self._filtered_ann_pl.is_empty():
-                hits_df = self._subset_annotations_pd("filtered", sample=sample_name, contig=contig_name, contigs=contig_values)
+            if show_hit_arrows and self.ctx.result is not None and not self.ctx.result.filtered_ann.is_empty():
+                hits_df = self.engine.result_annotations(self.ctx.result, hits=True, sample=sample_name, contig=contig_name, contigs=contig_values)
                 if is_grouped_plasmid:
                     hits_df = _add_synthetic_coords(hits_df, offsets)
                 for _, row in hits_df.iterrows():
@@ -502,6 +476,14 @@ class IgvControllerMixin:
         )
         self._igv_key = key
         self._igv_dirty = False
+        if highlight_bp is None:
+            # A new contig or mode opens on the selected gene, else on the
+            # first searched gene (All matches centers on its row itself).
+            target = self.igv_view.selected_gene_bp()
+            if target is None and hit_bp_positions:
+                target = hit_bp_positions[0]
+            if target is not None:
+                self.igv_view.center_on_bp(target)
 
 
     def _on_table_row_changed(
@@ -509,15 +491,17 @@ class IgvControllerMixin:
         current: QtCore.QModelIndex,
         _previous: QtCore.QModelIndex,
     ) -> None:
-        if self._syncing_igv_to_table:
-            return
-        if not current.isValid():
-            return
         model = self.table.model()
-        if not isinstance(model, AnnotationTableModel):
-            return
-        row_data = model.row_data(current.row())
-        if not row_data:
+        row_data = (
+            model.row_data(current.row())
+            if current.isValid() and isinstance(model, AnnotationTableModel)
+            else None
+        )
+        if self.igv_view is not None:
+            # The table's current row is the track's selected gene, also when
+            # scrolling the track moved it.
+            self.igv_view.set_selected_row(row_data)
+        if self._syncing_igv_to_table or not row_data:
             return
         if self.view_mode == "Global":
             self._show_global_context_in_igv(row_data)
@@ -532,6 +516,9 @@ class IgvControllerMixin:
         mapped_bp = self._map_raw_bp_to_igv_bp(mid)
         if mapped_bp is None:
             return
+        # The table scrolled to show the row: keep that scroll from
+        # recentering the track on the row in the middle of the table.
+        self._table_scroll_timer.stop()
         self._animate_igv_center_to_bp(mapped_bp)
 
 
@@ -657,7 +644,18 @@ class IgvControllerMixin:
         return int(self._igv_raw_contig_len)
 
 
+    def _on_table_scroll_range_changed(self, _minimum: int, _maximum: int) -> None:
+        # New rows or a resized table (a splitter, the window): Qt clamps the
+        # scroll to the new range right after. That is not the user
+        # scrolling, so the track must not follow it.
+        self._table_scroll_range_changed = True
+        QtCore.QTimer.singleShot(0, lambda: setattr(self, "_table_scroll_range_changed", False))
+
+
     def _on_table_scroll_changed(self, _value: int) -> None:
+        if self._table_scroll_range_changed:
+            self._table_scroll_range_changed = False
+            return
         if self._syncing_igv_to_table or self.view_mode not in {"Contig", "Context"}:
             return
         self._table_scroll_timer.start()
@@ -852,14 +850,14 @@ class IgvControllerMixin:
         row_data: Dict[str, Any],
         flank_genes: int = 15,
     ) -> Optional[Tuple[str, str, Tuple[int, int]]]:
-        if not getattr(self, "_base_allowed_samples", None):
+        if self.ctx.result is None or not self.ctx.result.allowed_samples:
             return None
-        sample = self._clean_text(row_data.get("Sample"))
-        contig = self._clean_text(row_data.get("Contig"))
+        sample = clean_text(row_data.get("Sample"))
+        contig = clean_text(row_data.get("Contig"))
         if not sample or not contig:
             return None
 
-        contig_df = self._subset_annotations_pd("base", sample=sample, contig=contig).sort_values(
+        contig_df = self.engine.result_annotations(self.ctx.result, hits=False, sample=sample, contig=contig).sort_values(
             ["StartInt", "StopInt", "Gene", "Product"]
         )
         if contig_df.empty:
@@ -867,14 +865,14 @@ class IgvControllerMixin:
         contig_df = contig_df.reset_index(drop=True)
 
         target_idx: Optional[int] = None
-        ann_uid = self._clean_text(row_data.get("AnnUID"))
+        ann_uid = clean_text(row_data.get("AnnUID"))
         if ann_uid and "AnnUID" in contig_df.columns:
             matches = contig_df.index[contig_df["AnnUID"].astype(str) == ann_uid].tolist()
             if matches:
                 target_idx = int(matches[0])
 
         if target_idx is None:
-            ann_id = self._clean_text(row_data.get("AnnotationID"))
+            ann_id = clean_text(row_data.get("AnnotationID"))
             if ann_id and "AnnotationID" in contig_df.columns:
                 matches = contig_df.index[contig_df["AnnotationID"].astype(str) == ann_id].tolist()
                 if matches:
@@ -918,10 +916,9 @@ class IgvControllerMixin:
             return
         sample, contig, window = focus
         target_bp = self._row_midpoint_bp(row_data)
-        self.current_sample = sample
-        self.current_contig = contig
-        self.current_contigs = [contig]
-        self.current_contig_label = f"Contig {contig}"
+        # The paired table's row selects its contig (one SelectionChanged; the
+        # Annotations panels in Contig or Around matches mode load it).
+        self._select_contig(sample, contig, [contig], f"Contig {contig}", origin="annotations")
         self._igv_dirty = True
         self._update_igv_view(
             sample,
@@ -930,3 +927,7 @@ class IgvControllerMixin:
             focus_windows=[window],
             highlight_bp=target_bp,
         )
+        mapped = self._map_raw_bp_to_igv_bp(target_bp) if target_bp is not None else None
+        if mapped is not None and self.igv_view is not None:
+            # Bring the row's gene, under the search pin, into view.
+            self.igv_view.center_on_bp(mapped)

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from pipeline.Utils import CATEGORIES
 
@@ -262,6 +264,78 @@ def load_db_catalog_index(path: Path, *, logger: Optional[logging.Logger] = None
     return DbCatalogIndex.from_catalog(catalog)
 
 
+@dataclass(frozen=True)
+class CatalogDb:
+    """One database a catalog lists; it is installed when its FASTA file exists. The
+    marker and compound databases are optional: a run searches the installed ones."""
+    name: str
+    category: str
+    path: Path
+
+    @property
+    def installed(self) -> bool:
+        return self.path.is_file()
+
+
+def catalog_databases(path: Path, *, logger: Optional[logging.Logger] = None) -> list[CatalogDb]:
+    """Every database of a catalog, installed or not (raises when the catalog cannot be read)."""
+    return [
+        CatalogDb(name, str(info.get("category") or ""), Path(info["db_path"]))
+        for name, info in load_db_catalog(path, logger=logger).items()
+    ]
+
+
+# sha256 of the database files, per (path, size, mtime_ns): a run records it more than once.
+_SHA256_CACHE: dict[tuple[str, int, int], str] = {}
+
+
+def _database_file_record(path: Path) -> dict[str, Any]:
+    out: dict[str, Any] = {"path": str(path)}
+    try:
+        st = path.stat()
+    except OSError:
+        out["missing"] = True
+        return out
+    out["size"] = st.st_size
+    out["mtime"] = datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(timespec="seconds")
+    key = (str(path), st.st_size, st.st_mtime_ns)
+    if key not in _SHA256_CACHE:
+        digest = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+        _SHA256_CACHE[key] = digest.hexdigest()
+    out["sha256"] = _SHA256_CACHE[key]
+    return out
+
+
+def run_database_record(used: Sequence[Path], catalog_path: Path) -> dict[str, list[dict[str, Any]]]:
+    """The databases of one kind a run searches ("used": name, category, path, size, mtime,
+    sha256) and the catalog's databases it could not ("not_installed": their file is
+    missing). Never raises: an unreadable catalog leaves the used ones unnamed."""
+    try:
+        listed = catalog_databases(catalog_path)
+    except Exception:
+        listed = []
+    by_stem = {db.path.stem: db for db in listed}
+    used_stems = {Path(p).stem for p in used}
+    used_rows: list[dict[str, Any]] = []
+    for raw in used:
+        path = Path(raw)
+        db = by_stem.get(path.stem)
+        used_rows.append({
+            "name": db.name if db else path.stem,
+            "category": db.category if db else "",
+            **_database_file_record(path),
+        })
+    missing = [
+        {"name": db.name, "category": db.category, "path": str(db.path)}
+        for db in listed
+        if not db.installed and db.path.stem not in used_stems
+    ]
+    return {"used": used_rows, "not_installed": missing}
+
+
 __all__ = [
     "CATALOG_DIR",
     "MARKER_DB_CATALOG_PATH",
@@ -275,4 +349,7 @@ __all__ = [
     "load_db_catalog",
     "DbCatalogIndex",
     "load_db_catalog_index",
+    "CatalogDb",
+    "catalog_databases",
+    "run_database_record",
 ]

@@ -7,6 +7,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from pipeline.RunSteps import ProgressCallback, report_progress
 from pipeline.ToolEnv import conda_tool_cmd
 
 MLST_OUT_FILES: tuple[str, ...] = (
@@ -81,6 +82,7 @@ def run_mlst(
     logger: logging.Logger,
     *,
     threads: int = 1,
+    progress: ProgressCallback = None,
 ) -> Path:
     genomes = [Path(p) for p in genome_files if Path(p).exists() and Path(p).is_file()]
     if not genomes:
@@ -97,13 +99,15 @@ def run_mlst(
     errors: list[str] = []
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_map = {executor.submit(_run_mlst_one, base_cmd, genome): genome for genome in genomes}
-        for future in as_completed(future_map):
+        report_progress(progress, 0, len(genomes))
+        for done, future in enumerate(as_completed(future_map), start=1):
             genome = future_map[future]
             try:
                 results.append(future.result())
             except Exception as exc:
                 logger.error("mlst failed for %s: %s", genome.name, exc)
                 errors.append(str(exc))
+            report_progress(progress, done, len(genomes))
 
     if errors:
         preview = "; ".join(errors[:5])

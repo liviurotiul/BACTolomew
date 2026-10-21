@@ -1,0 +1,1326 @@
+BACTOLOMEW PIPELINE GRAPH
+Specification for drawing a flow chart figure. Derived from the code in
+/home/bals/Documents/dev/BACTolomew and from one completed reference run
+runs/sample_78eaa9126850/run_78eaa9126850 (153 genomes, Acinetobacter baumannii).
+Plain text, no markdown. Read sections 3 and 4 as the authoritative graph.
+
+
+1. PURPOSE
+
+BACTolomew takes a folder of assembled bacterial genomes and runs one sequential
+pipeline over them: assembly QC, Bakta annotation, MLST and cgMLST typing, plasmid
+reconstruction, pangenome and recombination analysis, two phylogenies, fastGEAR lineage
+inference, and a DIAMOND screen of the annotated CDS against marker protein databases,
+all merged into one annotation table held in memory.
+The figure should convey three things: which stages run once per genome and which
+consume the whole cohort, which arrows carry real data between stages and which are only
+execution order, and that the databases are prepared once outside any run.
+
+
+2. HOW TO READ THIS FILE
+
+Section 3 gives the nodes first, each with a stable id on its own labelled line.
+Section 4 gives the edges as "from_id -> to_id : what flows". Edges refer to nodes only
+by the ids in section 3; no edge names a node that is not listed there.
+An edge marked "[order only, no data]" exists because the Runner calls one step after the
+other, not because data moves. Draw those faintly, or as a separate execution spine, and
+never as data flow.
+An edge marked "[gate, no data]" is a control or freshness condition enforced by the code:
+the downstream stage refuses to run, or refuses to be reused, without the upstream one,
+but no file passes between them. Draw those dashed.
+Node "type" is one of input, database, process, output.
+
+
+3. NODE LIST
+
+  INPUTS
+
+    id:        user_genomes
+    label:     Genome assemblies
+    type:      input
+    tool:      none. CLI --genomes <folder> collected by FastaUtils.collect_fastas, or the
+               GUI genome picker in startup_dialog.py.
+    runs:      once, before the pipeline
+    optional:  no. CLI.read_arguments errors with "--genomes is required when not using
+               --GUI", and the config builder raises SystemExit 1 when the folder holds no
+               FASTA.
+    inputs:    user input: one assembled nucleotide FASTA per genome, .fna / .fa / .fasta
+    outputs:   nothing in the run directory. The absolute paths are recorded in
+               run_config.json inputs.genomes and run_state.json inputs.genomes. 153 files
+               under /Data/ST492/final_fasta in the reference run.
+    note:      A SAMPLE is one input assembly FASTA. The sample name is Path.stem, for
+               example GCA_000804885.1, and it names every per-sample directory
+               downstream. DataInput rejects two files with the same stem or the same
+               name after stripping .gz and the FASTA suffix (find_genome_name_collisions,
+               also used by the GUI genome picker), listing the colliding paths. The
+               genomes are never copied into the run directory except as sanitized or
+               staged copies, in bakta_tmp/, assembly_qc/checkm2_input/ and the MOB-suite
+               per-sample dirs; the tools read the originals at their absolute host paths,
+               which is why those paths are bind-mounted into the container.
+
+  DATABASES AND SETUP
+
+    id:        datainput
+    label:     Validate inputs
+    type:      process
+    tool:      pure Python: pipeline.DataInput dataclass __post_init__, built by
+               CLI.workflow_cfg or by the GUI startup_dialog.py. Merges
+               bactolomew_config.json, loaded by ToolEnv._load_app_config, with the CLI
+               flags --output, --bakta_db, --mobsuite_db, --checkm2_db, --cores,
+               --dmnd_threads, --bakta_threads, --window_length.
+    runs:      once per run
+    optional:  no. The CLI aborts with SystemExit 1 when --bakta_db, --queries or
+               --compound are missing, when fastgear.image is unset, or when
+               validate_chewbbaca_settings fails. DataInput raises ValueError
+               "bakta_db: required" or "bakta_db: directory not found", and on duplicate
+               marker or genome stems.
+    inputs:    user input: genome folder, output directory, core budget, DB path
+               overrides. Database: bactolomew_config.json sections runtime, container,
+               envs, envs_root, databases, bakta_db, chewbbaca, assembly_qc, fastgear,
+               mobsuite. Paths from user_genomes, db_bakta, db_markers, db_compound and
+               db_cgmlst must all resolve.
+    outputs:   an in-memory DataInput object; nothing on disk yet. Its fields are what
+               later appear as run_config.json inputs.*
+    note:      Resolves every path, forces diamond = bakta = True regardless of the flags,
+               so Bakta can never be switched off, creates the output directory, and picks
+               the Snippy reference. The code default is
+               sorted(self.genomes, key=lambda p: (p.stem, str(p)))[0], which for this
+               cohort would be 20038ENE2.fna, but the reference run recorded
+               snippy_reference = /Data/ST492/final_fasta/GCA_028622775.1.fna, so the
+               reference was supplied explicitly: startup_dialog.py line 850 passes
+               inputs["snippy_reference"] back from an existing run_config.json when a run
+               is resumed. Do NOT caption the figure "reference auto-selected".
+
+    id:        run_dir_init
+    label:     Open run directory
+    type:      process
+    tool:      pure Python: the Runner._run_workflow_impl preamble
+               (_compute_thread_plan, _build_run_config, _build_expected_outputs,
+               _write_run_lock, _flush_run_state), wrapped by run_workflow in
+               make_container_context / set_container_context.
+    runs:      once per run
+    optional:  no
+    inputs:    stage datainput: the validated DataInput object. Stage tools_runtime: the
+               container runtime and image used to build the bind-mount context.
+    outputs:   the run directory itself, runs/<sample_set_id>/<run_id> in GUI mode or any
+               --output folder in CLI mode; run_config.json with created_at,
+               sample_set_id, run_id, annotation_id_strategy, inputs, thread_plan,
+               output_dir; expected_outputs.json, 2199 predicted absolute paths in the
+               reference run, all of which exist on disk; run.lock.json, present while the
+               run is live and deleted by the finally block; run_state.json with status
+               "running"; <output>/.bactolomew_home, the container HOME, absent from this
+               run directory.
+    note:      sample_set_id = "sample_" + sha1 of the sorted unique genome stems joined
+               by "|", truncated to 12 characters, so the same cohort always reuses the
+               same directory. An existing run_config.json in the folder is read back
+               first (after RunValidation.genome_set_change_error has refused, with
+               Runner.GenomeSetChangedError, a folder whose recorded genome set differs
+               from the given one), which is how a resumed run keeps its run_id and its
+               annotation_id_strategy "sorted_bakta_json_v1". run.stop is deleted here;
+               creating that file later makes the next _check_stop raise RunStoppedError.
+               thread_plan in the reference run: total_cores 104; bakta, assembly_qc,
+               mobsuite, chewbbaca, diamond_makedb and panaroo 32; mlst, diamond_blastx,
+               gubbins and phylogeny_raxml 64; phylogeny_snippy 16. run_config.json also
+               records inputs.bakta_threads = 104 and inputs.dmnd_threads = 104, which are
+               NOT what is passed to the tools.
+
+    id:        tools_runtime
+    label:     Tool runtime
+    type:      database
+    tool:      one unified container image, bactolomew-tools:0.1.0, from
+               bactolomew_config.json container.image, holding every tool as a conda env;
+               built or pulled by ContainerRuntime.ensure_tools_image. The configured
+               runtime is "docker".
+    runs:      once, outside the run
+    optional:  no: every tool call goes through ToolEnv.tool_cmd / conda_tool_cmd.
+    inputs:    user input and configuration: bactolomew_config.json runtime
+               (docker, singularity or native), container.image, envs_root, envs;
+               docker/Dockerfile or a configured registry.
+    outputs:   a local docker image, or a .sif for singularity, or, with runtime "native"
+               or BACTOLOMEW_NATIVE, the per-tool conda prefixes under envs/:
+               assembly_qc, bakta, chewbbaca, diamond, fasttree, gubbins, mlst, mobsuite,
+               panaroo, phylogeny, platon, snippy.
+    note:      ToolEnv._container_prefix wraps each call as
+               docker run --rm --user uid:gid -e HOME=<out>/.bactolomew_home
+               [--memory Ng] -v root:root ... -w <dir> bactolomew-tools:0.1.0
+               conda run --no-capture-output -n <env> <exe>.
+               Host directories are bind-mounted at IDENTICAL paths so absolute path
+               arguments resolve unchanged. _tool_env_key maps bakta to bakta; diamond to
+               diamond; mob_recon and mob_typer to mobsuite; snippy, snippy-core and
+               raxml-ng to phylogeny; run_gubbins.py to gubbins; panaroo to panaroo;
+               chewbbaca to chewbbaca; mlst to mlst; quast, quast.py and checkm2 to
+               assembly_qc. fastGEAR is the one exception: raw argv through
+               ToolEnv.container_image_cmd against the SAME tools image, with no
+               conda run. A native runtime turns each call into
+               conda run -p envs/<env> <exe>. run_report.json for the reference run has
+               tools.used == [] and tools.versions == {}, that is, not a single external
+               tool was launched, so that run cannot tell you which runtime was used.
+
+    id:        db_bakta
+    label:     Bakta database
+    type:      database
+    tool:      prepared once outside a run. DbDownload.install_bakta (first-time setup) runs
+               conda run -n bakta bakta_db download --output <dest> --type full
+               inside the tools image (a light DB installed earlier still works).
+    runs:      once, outside the run
+    optional:  no in practice. DataInput raises ValueError "bakta_db: required" or
+               "bakta_db: directory not found", and Runner.run_bakta raises
+               FileNotFoundError if the resolved path is missing. Only if CFG.bakta_db
+               were empty would run_bakta_on_fastas omit --db and let bakta fall back to
+               its own configured DB, and DataInput makes that unreachable.
+    inputs:    database: the downloaded Bakta reference DB directory
+    outputs:   a directory outside the run dir: /Shared/bakta_db_full/db/db, recorded as
+               bactolomew_config.json bakta_db and run_config.json inputs.bakta_db
+    note:      pure input node, nothing in the run directory. Added to the container bind
+               roots by make_container_context so bakta sees it at the identical path
+               inside the image.
+
+    id:        db_checkm2
+    label:     CheckM2 database
+    type:      database
+    tool:      prepared once outside a run: a prebuilt CheckM2 DIAMOND reference file.
+    runs:      once, outside the run
+    optional:  yes, overridable with --checkm2_db. If checkm2_database_path is blank the
+               --database_path flag is omitted and CheckM2 uses its own configured DB. It
+               was set in the reference run.
+    inputs:    database: uniref100.KO.1.dmnd, installed once
+    outputs:   envs/assembly_qc/checkm2_db/CheckM2_database/uniref100.KO.1.dmnd, recorded
+               as bactolomew_config.json assembly_qc.checkm2_database_path and in
+               run_config.json inputs.assembly_qc
+    note:      consumed only by assembly_qc. ToolEnv.make_container_context explicitly
+               appends configured_assembly_qc_settings()["checkm2_database_path"] to the
+               bind roots.
+
+    id:        db_markers
+    label:     Marker sequence catalogue
+    type:      database
+    tool:      prepared once outside a run; read by DbCatalog.load_db_catalog and
+               load_db_catalog_index. In GUI mode the marker file list IS the catalog,
+               through startup_dialog._load_catalog_entries over MARKER_DB_CATALOG_PATH;
+               in CLI mode the user points --queries at a file or folder and the catalog
+               is used only to look up each stem's category.
+    runs:      once, outside the run
+    optional:  no. CLI --queries is required, SystemExit 1 is raised if the catalog cannot
+               be loaded, and DataInput requires at least one marker FASTA with unique
+               stems.
+    inputs:    database: marker protein FASTAs under DB/seq/markers/ plus
+               DB/catalogs/marker_db_catalog.json, which gives each file a category and an
+               optional resistance_metadata pointer
+    outputs:   DB/seq/markers/*.fasta, and the stem to category map
+               DataInput.marker_categories, recorded as run_config.json
+               inputs.marker_categories
+    note:      the repo holds 13 marker FASTAs TODAY (AMRF_core-AMR, AMRF_core-BMRG,
+               AMRF_plus-AMR, AMRF_plus-BMRG, AMRF_plus-VIRULENCE,
+               BacMet2-EXP-database_BMRG, CARD_AMR, CGE-MGE-Prot_MOBILE,
+               CGE-PlasmidFinder-Prot_PLASMID, CGE-VirulenceFinder-Prot_VIRULENCE,
+               ISFinder-Prot_MOBILE, Phaster-Prophage-Virus-Prot_PHAGE,
+               VFDB-setB-Prot_VIRULENCE) and marker_db_catalog.json has the same 13
+               entries. The reference run used 14: run_config.json inputs.marker_sequences
+               also lists COGorg24_COG.fasta, with inputs.marker_categories
+               COGorg24_COG = "COG". That file and its catalog entry have since been
+               removed from the repo. Do not caption the figure "14 marker DBs in
+               DB/seq/markers" as a present-tense fact.
+
+    id:        db_compound
+    label:     Compound element catalogue
+    type:      database
+    tool:      prepared once outside a run; read by DbCatalog.load_db_catalog_index.
+    runs:      once, outside the run
+    optional:  no. CLI --compound is required, the run aborts if no FASTA is found, and
+               DataInput requires at least one.
+    inputs:    database: reference-locus and compound-element protein FASTAs plus
+               DB/catalogs/compound_db_catalog.json
+    outputs:   DB/seq/compound/PAIDB-PathogenicityResIslands_RESISTANCE.fasta, the only
+               one, in the run and today. DataInput.reference_locus_categories:
+               run_config.json records
+               {"PAIDB-PathogenicityResIslands_RESISTANCE": ""}, an EMPTY category.
+    note:      these are the DIAMOND subjects for diamond_reference_loci, searched against
+               the raw genomes rather than against Bakta CDS. The empty category means
+               DiamondWorkflow.load_diamond_tsvs tags those hits with an empty
+               MarkerCategory.
+
+    id:        db_resistance_meta
+    label:     Resistance metadata
+    type:      database
+    tool:      prepared once outside a run; resolved by DbCatalog through the
+               resistance_metadata catalog entry, with
+               DbCatalog.KNOWN_MARKER_RESISTANCE_METADATA as fallback, and parsed by
+               ResistanceMetadata.py.
+    runs:      once, outside the run
+    optional:  conditional: only 5 marker stems carry resistance metadata; the other
+               markers simply get none and their hits keep empty Resistance* columns.
+    inputs:    database: DB/metadata/AMRF/ReferenceGeneCatalog.txt and
+               DB/metadata/CARD/aro_index.tsv
+    outputs:   no run-directory file. The resolved map is recorded in run_config.json
+               inputs.marker_resistance_metadata, which in the reference run holds exactly
+               5 entries: AMRF_core-AMR, AMRF_core-BMRG, AMRF_plus-AMR and AMRF_plus-BMRG
+               to ReferenceGeneCatalog.txt, source AMRF; CARD_AMR to aro_index.tsv,
+               source CARD.
+    note:      consumed only inside collect_annotations, by
+               ResistanceMetadata.enrich_marker_hits_with_resistance and
+               build_annotation_resistance_maps. No external tool reads it.
+
+    id:        db_cgmlst
+    label:     cgMLST schemes
+    type:      database
+    tool:      prepared once outside a run. src/pipeline/ChewbbacaSchemaBuild.py is pure
+               Python: it normalizes allele FASTAs and pickles chewBBACA's .schema_config
+               and .genes_list itself, so no chewBBACA PrepExternalSchema call is needed.
+               It is invoked ONLY from the GUI schema import dialog
+               (src/annotation_explorer_polars/schema_import_dialog.py), never from
+               Runner.py or any workflow module.
+    runs:      once, outside the run
+    optional:  the BUILD is optional and happens outside a run; the schema DIRECTORY is
+               not optional when chewbbaca runs. validate_chewbbaca_settings is called at
+               CLI time and again as the very first statement of
+               Runner._run_workflow_impl, so an unusable schema aborts the entire pipeline
+               before any stage starts.
+    inputs:    user input: a cgMLST source, which can be an already-built chewBBACA schema
+               directory, a folder or .zip of per-locus allele FASTAs, a combined
+               multi-locus FASTA or a single-locus FASTA, plus a schema id or species slug
+               and the MLST scheme aliases to register
+    outputs:   DB/cgmlst/<schema_id>/<locus>.fasta, 2390 locus FASTAs for
+               acinetobacter_baumannii; DB/cgmlst/<schema_id>/short/<locus>_short.fasta;
+               DB/cgmlst/<schema_id>/.schema_config and .genes_list, pickles whose
+               .schema_config records bsr 0.6, translation_table 11, size_threshold 0.2,
+               word_size 5, chewBBACA_version 3.5.4; DB/cgmlst/
+               scheme_species_catalog.json, rewritten atomically and sorted by schema_id;
+               bactolomew_config.json chewbbaca.available_schemas[<schema_id>], 34 schemas
+               in the shipped config, written inside a bare try/except that swallows
+               failures.
+    note:      draw as ONE database node feeding chewbbaca's -g <schema_dir> plus the
+               catalog that ChewBBACAWorkflow._select_runtime_schema reads. Nothing from
+               it is written into the run directory. The reference run used
+               DB/cgmlst/acinetobacter_baumannii, and run_config.json inputs.chewbbaca
+               records schema_dir, genes_list and catalog_path explicitly.
+
+    id:        db_mobsuite
+    label:     MOB-suite database
+    type:      database
+    tool:      prepared once outside a run; the path is passed through
+               ToolEnv.configured_mobsuite_settings.
+    runs:      once, outside the run
+    optional:  yes: when empty the --database_directory flag is simply omitted.
+    inputs:    database: a MOB-suite database directory, from config
+               mobsuite.database_directory / db_path / database / db, or --mobsuite_db
+    outputs:   a MOB-suite DB directory. UNSET in this repo: bactolomew_config.json has
+               "mobsuite": {}, run_config.json inputs.mobsuite is
+               {"database_directory": "", "extra_args": []}, and mobsuite/summary.json
+               records database_directory "", so mob_recon used the DB bundled in the
+               mobsuite conda env.
+    note:      when set it is added to the container bind roots by make_container_context.
+               The bundled fallback DB's path and version cannot be determined from the
+               repo or the run directory.
+
+  PER SAMPLE STAGES
+
+    id:        bakta
+    label:     Bakta annotation
+    type:      process
+    tool:      bakta, through ToolEnv.tool_cmd("bakta"), that is
+               conda run --no-capture-output -n bakta bakta inside
+               bactolomew-tools:0.1.0; natively conda run -p envs/bakta bakta.
+               Utils.bakta_allowed_versions pins "bakta 1.10.4".
+    runs:      per sample
+    optional:  not user-optional, DataInput forces CFG.bakta = True. Two reuse gates. Run
+               level: when every bakta/<stem>/<stem>.json and .gff3 exists and
+               _validate_bakta_reuse_outputs passes, the step closes as
+               "reused_existing_output" and ran_bakta is set True without calling bakta,
+               which is what the reference run did. Per sample: a genome whose
+               bakta/<sample>/<sample>.json already exists is skipped inside the loop.
+    inputs:    user input: one genome FASTA per sample. Each is first rewritten by
+               FastaUtils.prepare_query_fasta with write_map=False into
+               bakta_tmp/<sample>.fna, with every defline replaced by contig_<int>; bakta
+               runs on that sanitized copy, never on the original. Database: db_bakta,
+               passed as --db.
+    outputs:   bakta/<sample>/<sample>.{json,gff3,tsv,txt,faa,ffn,embl,gbff,
+               hypotheticals.faa,hypotheticals.tsv,inference.tsv,log} plus <sample>.fna,
+               which is the sanitized input copied back in and not a bakta product:
+               13 files x 153 samples = 1989 entries, all in expected_outputs.json.
+               bakta_tmp/<sample>.fna, 153 sanitized inputs left behind after the run and
+               NOT in expected_outputs.json.
+    note:      per sample but a plain sequential for-loop in one process; the concurrency
+               is inside bakta through --threads thread_plan["bakta"] =
+               min(total_cores, 32) = 32 here. Flags: --force --output
+               bakta_tmp/<sample>__bakta_out --threads --prefix <sample>
+               --keep-contig-headers plus --skip-trna --skip-tmrna --skip-rrna
+               --skip-ncrna --skip-ncrna-region --skip-crispr --skip-sorf --skip-gap
+               --skip-ori --skip-plot --skip-pseudo, so this stage effectively yields CDS
+               calls only. The tree is copytree'd from bakta_tmp into bakta/<sample>, the
+               sanitized FASTA is copied in as <sample>.fna, and the temp dir is deleted.
+               Per-sample failures are accumulated and raised as one RuntimeError at the
+               end of the loop. Downstream: <sample>.json and <sample>.fna feed
+               collect_annotations; <sample>.gff3 plus .fna appended after ##FASTA feeds
+               panaroo. NOT produced here: the 93 bakta/<sample>/<sample>.fna.fai files on
+               disk, which were written out of band; do not draw them.
+
+    id:        mlst
+    label:     MLST typing
+    type:      process
+    tool:      mlst, the tseemann tool, with its bundled PubMLST database, in the mlst
+               conda env inside the tools image. MlstWorkflow._resolve_mlst_base_cmd
+               probes mlst --version then --help through
+               ToolEnv.conda_tool_cmd("mlst"), falling back to bare mlst on PATH. No
+               --scheme is ever passed, so mlst auto-detects.
+    runs:      per sample, with cohort output
+    optional:  not user-optional. Skipped by reuse when _validate_mlst_reuse_outputs finds
+               both files non-empty and results.json covering every input genome stem,
+               which is what the reference run did. A failure raises and aborts the run.
+    inputs:    user input: the assembly FASTA files, one mlst process per genome.
+               Database: the PubMLST typing database shipped inside the mlst env, not a
+               path the pipeline configures.
+    outputs:   mlst/results.csv with columns sample, input_file, scheme, sequence_type and
+               alleles joined by ";"; mlst/results.json, one object per genome with
+               sample, input_file, scheme, sequence_type and alleles[]
+    note:      the ONLY stage with real intra-stage parallelism:
+               ThreadPoolExecutor(max_workers=max(1, min(threads, len(genomes), 64))),
+               with threads = min(total_cores, min(64, n_genomes)) = 64 here. Results are
+               collected, sorted by (sample, input_file) and written once as a cohort CSV
+               and JSON pair, so it is per-sample compute with cohort output. Any
+               per-genome failure is re-raised as one RuntimeError after all futures
+               finish, so partial output is never written. All 153 samples carry scheme
+               abaumannii_2 in the reference run. mlst consumes nothing from assembly_qc
+               or bakta. Its one real data edge out is mlst/results.json to chewbbaca.
+
+    id:        mobsuite
+    label:     Plasmid reconstruction
+    type:      process
+    tool:      mob_recon from MOB-suite, through ToolEnv.tool_cmd("mob_recon"), that is
+               conda run -n mobsuite mob_recon inside bactolomew-tools:0.1.0; natively
+               conda run -p envs/mobsuite mob_recon. Flags: --infile --outdir
+               --num_threads --sample_id <stem> --force, plus --database_directory only
+               when configured, plus mobsuite.extra_args.
+    runs:      per sample, with cohort output
+    optional:  not user-optional, there is no flag to disable it. Skipped by reuse when
+               _validate_mobsuite_reuse_outputs finds the three tracked files present,
+               non-empty, parseable and covering every genome with status success, which
+               is what the reference run did.
+    inputs:    user input: each genome FASTA, first rewritten by
+               FastaUtils.prepare_query_fasta with write_map=True into a temp dir with
+               deflines renamed to contig_<N>. Database: db_mobsuite, unset in this repo,
+               so mob_recon used its bundled DB.
+    outputs:   mobsuite/contigs.tsv, tracked, cohort-wide, 15770 data rows;
+               mobsuite/plasmids.tsv, tracked, 642 data rows; mobsuite/summary.json,
+               tracked, with database_directory, threads, sample_count 153,
+               plasmid_contig_count, plasmid_count and per-sample records;
+               mobsuite/per_sample/<sample>/, 153 directories, NOT tracked, each with
+               contig_report.txt, mge.report.txt, chromosome.fasta, <sample>.fna (the
+               sanitized query), command.stdout.log and command.stderr.log, plus
+               mobtyper_results.txt in 143 of them, biomarkers.blast.txt in 146, and
+               plasmid_<CLUSTER>.fasta or plasmid_novel_<md5>.fasta where plasmids were
+               reconstructed.
+    note:      hybrid: mob_recon runs once per genome in a plain sequential for-loop, with
+               parallelism inside mob_recon through --num_threads = min(cores, 32) = 32,
+               but the three top-level tables are cohort-wide and written once after the
+               loop. Per-genome failures are APPENDED to a failures list and re-raised as
+               one RuntimeError after the loop, not raised immediately. Each sample runs
+               into a TemporaryDirectory under the run dir and is copytree'd to
+               mobsuite/per_sample/<sample> only on success. Post-processing reclassifies
+               MOB-recon calls: a contig keeps IsPlasmid true only with direct evidence,
+               that is a replicon, relaxase, MPF or oriT type or accession, or a
+               mobilizable or conjugative PredictedMobility; otherwise Prediction becomes
+               "plasmid_similarity_only" or "chromosome", and plasmids.tsv is filtered to
+               rows with direct evidence. SCHEMA DRIFT: mobsuite/contigs.tsv on disk has
+               28 columns and no PlasmidID, while MOBSUITE_CONTIG_COLUMNS in the current
+               code defines 29 with PlasmidID fourth; plasmids.tsv matches its coded
+               columns. mob_typer is added to tools_used but is never invoked directly:
+               mob_recon calls it internally, so keep it inside this node. The 7
+               mobsuite/per_sample/<s>/<s>.fna.fai files are out-of-band artefacts; do not
+               draw them.
+
+    id:        snippy_per_sample
+    label:     Snippy variant calling
+    type:      process
+    tool:      snippy in the phylogeny conda env inside the tools image. Per genome:
+               snippy --cpus <snippy_threads> --outdir <tmp>/snippy/per_sample/<stem>
+               --ref <reference fasta> --ctgs <genome fasta>. Implemented in
+               PhylogenyWorkflow._run_snippy_per_sample.
+    runs:      per sample
+    optional:  part of the single Runner step "phylogeny" and skipped with it on reuse.
+               The reference genome is excluded from the loop, so a single-genome cohort
+               produces no sample directories and the snippy branch is bypassed entirely:
+               a trivial one-taxon Newick is written to trees/raw/snippy_core.raxml.nwk
+               instead. Since the phylogeny rework of 2026-10 the step reruns only when the
+               Snippy tree itself is missing or invalid (no Gubbins gate).
+    inputs:    user input: every genome FASTA except the reference, iterated sorted by
+               (stem, str(path)); the reference genome FASTA CFG.snippy_reference,
+               /Data/ST492/final_fasta/GCA_028622775.1.fna in the reference run, supplied
+               and not auto-selected. No other stage feeds it.
+    outputs:   snippy/per_sample/<sample>/ for 152 of the 153 genomes, the reference being
+               excluded, each with snps.vcf, whose existence is asserted, plus snps.bam
+               and .bai, snps.aligned.fa, snps.bed, snps.consensus.fa,
+               snps.consensus.subs.fa, snps.csv, snps.filt.vcf, snps.gff, snps.html,
+               snps.log, snps.raw.vcf, snps.subs.vcf, snps.tab, snps.txt, snps.vcf.gz and
+               .csi, plus ref.fa and ref.fa.fai and a reference/ subdirectory of 11 files
+               written by Snippy itself; snippy/reference.txt, one line holding the
+               absolute path of the reference genome, written by BACTolomew.
+    note:      sequential per-sample loop in one process; concurrency comes from --cpus,
+               16 in this run. Everything is built in a TemporaryDirectory under the run
+               directory and moved over snippy/ only at the end of run_phylogeny, so a
+               failed phylogeny step leaves no snippy/ at all. A non-zero Snippy exit
+               raises immediately and fails the whole step. None of snippy/ is in
+               expected_outputs.json; only the raw tree and trees/trees.json are. Inside
+               run_phylogeny the order is this, then snippy_core, then raxml_snippy_tree.
+
+    id:        diamond_reference_loci
+    label:     Reference locus screen
+    type:      process
+    tool:      diamond makedb then diamond blastx, both in the diamond conda env inside
+               the tools image. The blastx flags are hardcoded in
+               DiamondWorkflow.run_diamond_annotations: --outfmt 6 with the 14 fields
+               qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue
+               bitscore qlen slen, --id 80, --subject-cover 80, --max-target-seqs 0,
+               --max-hsps 7, --evalue 1e-5, --masking 0, --quiet, --fast, --block-size 16,
+               --index-chunks 1, --threads = min(cores, 64) = 64.
+    runs:      per sample
+    optional:  skipped by reuse when validate_reference_hit_outputs reports no errors,
+               which is existence only, since DIAMOND legitimately writes an empty TSV for
+               a genome with no hits; the reference run recorded tsv_count 153. The stage
+               self-aborts with a warning and returns an empty list if no reference-locus
+               DB could be built. Inside run_diamond_annotations, any genome and DB pair
+               whose output TSV already exists is skipped.
+    inputs:    stage db_compound:
+               DB/seq/compound/PAIDB-PathogenicityResIslands_RESISTANCE.fasta, built into
+               a DIAMOND DB. User input: each genome FASTA, sanitized per genome by
+               prepare_query_fasta with sanitize=True so query ids become contig_<N>.
+    outputs:   dmnd/reference_loci/PAIDB-PathogenicityResIslands_RESISTANCE.dmnd, tracked;
+               annotations/reference_loci/
+               <sample>-vs-PAIDB-PathogenicityResIslands_RESISTANCE.tsv, 153 files, all
+               tracked.
+    note:      a nested sequential loop over genomes times reference-locus DBs;
+               parallelism is inside each DIAMOND call. One node covers both the makedb
+               and the blastx half because Runner treats them as one step. After the
+               search the stage loads the TSVs with load_diamond_tsvs and only LOGS the
+               row count; that DataFrame is never written and no later stage consumes it.
+               There is no data or gating edge from here into collect_annotations; it is
+               only the preceding step. The max_target_seqs=1 argument of
+               run_diamond_annotations is dead: the command hardcodes --max-target-seqs 0.
+               annotations/reference_loci/tmpedwy_4n4/ and tmpvq5wkvn2/ are leftover
+               TemporaryDirectories from interrupted DIAMOND calls, not outputs.
+
+  COHORT STAGES
+
+    id:        assembly_qc
+    label:     Assembly QC
+    type:      process
+    tool:      QUAST, as quast.py, and CheckM2, as checkm2 predict, then an in-process
+               pandas scoring pass. Both tools map to env key "assembly_qc" in
+               ToolEnv._tool_env_key, so under runtime "docker" each call is
+               docker run ... bactolomew-tools:0.1.0 conda run --no-capture-output
+               -n assembly_qc <exe>; natively conda run -p envs/assembly_qc <exe>.
+    runs:      cohort
+    optional:  not user-optional. Skipped by reuse only: it is the first step in
+               Runner._run_workflow_impl and runs unconditionally unless
+               _validate_assembly_qc_reuse_outputs passes, in which case the step closes
+               with reason "reused_existing_output", which is what the reference run did.
+               Any failure raises and aborts the whole run.
+    inputs:    user input: all genome FASTAs in ONE QUAST call, as positional arguments
+               with --labels set to the file stems, and, separately, copied with
+               shutil.copy2 into assembly_qc/checkm2_input/, which is what CheckM2 gets as
+               --input. Database: db_checkm2, as --database_path uniref100.KO.1.dmnd.
+    outputs:   assembly_qc/summary.tsv and summary.json, tracked; assembly_qc/quast/
+               report.tsv, tracked, plus transposed_report.tsv, report.txt, report.tex,
+               transposed_report.txt, transposed_report.tex, quast.log and an EMPTY
+               basic_stats/ directory, since --no-plots means nothing is written into it;
+               assembly_qc/checkm2/quality_report.tsv, tracked, plus protein_files/ with
+               153 .faa, diamond_output/ with 1 file, and checkm2.log;
+               assembly_qc/checkm2_input/<sample>.fna, 153 copies of the input genomes;
+               assembly_qc/quast.command.stdout.log, quast.command.stderr.log,
+               checkm2.command.stdout.log and checkm2.command.stderr.log.
+    note:      one QUAST invocation over all genomes and one CheckM2 predict over one
+               input directory, so it is a single cohort stage even though summary.tsv has
+               one row per sample. The assembly_qc root is shutil.rmtree'd and recreated at
+               the start of a real run. Only 4 paths are in expected_outputs.json:
+               summary.tsv, summary.json, quast/report.tsv and checkm2/quality_report.tsv;
+               everything else above is genuinely on disk but untracked. The Quality score
+               0 to 100 is derived from CheckM2 completeness minus penalties, two of which,
+               deviation from the COHORT median total length and median GC, are
+               cohort-relative, so a sample's score depends on the whole sample set.
+               IMPORTANT for the figure: nothing downstream reads summary.tsv, no stage is
+               gated on Quality, and there is no code that filters CFG.genomes on it. Do
+               not draw QC as a filter.
+
+    id:        panaroo
+    label:     Panaroo pangenome
+    type:      process
+    tool:      panaroo, through ToolEnv.tool_cmd("panaroo"), that is
+               conda run -n panaroo panaroo inside bactolomew-tools:0.1.0. Command:
+               panaroo -i <prepared gffs> -o <tmp>/out -t <threads> --clean-mode strict
+               --remove-invalid-genes -a core. Implemented in
+               PhylogenyWorkflow.run_panaroo; ensure_panaroo_out consolidates the temp
+               output into panaroo/out.
+    runs:      cohort
+    optional:  conditional. Runner closes it as "skipped" with reason "bakta_not_run" when
+               ran_bakta is false, in which case panaroo_out becomes None, which then
+               FAILS gubbins. It is reused when panaroo/out/gene_presence_absence.csv
+               already exists, which is what the reference run did. Otherwise, if
+               run_panaroo returns None, because no Bakta GFFs were found or panaroo could
+               not be resolved, the step is closed as FAILED with reason
+               "panaroo_failed_or_no_gff" and raises "Panaroo produced no output
+               directory."
+    inputs:    stage bakta: bakta/<sample>/<sample>.gff3 for every genome, collected by
+               Runner._collect_bakta_gffs_for_genomes in the order of CFG.genomes,
+               preferring .gff3 over other .gff* forms; and the matching
+               bakta/<sample>/<sample>.fna, found by _find_fasta_for_gff and appended
+               after a ##FASTA marker into each prepared GFF.
+    outputs:   panaroo/gff_prepared/<sample>.gff, 153 staged GFF plus FASTA files;
+               panaroo/out/gene_presence_absence.csv and panaroo/out/
+               core_gene_alignment.aln, the only two in expected_outputs.json as
+               Runner.PANAROO_OUT_FILES; panaroo/out/core_gene_alignment_filtered.aln,
+               gene_presence_absence_roary.csv, gene_presence_absence.Rtab,
+               struct_presence_absence.Rtab, pan_genome_reference.fa,
+               summary_statistics.txt, alignment_entropy.csv, combined_DNA_CDS.fasta,
+               combined_protein_CDS.fasta, combined_protein_cdhit_out.txt and .clstr,
+               gene_data.csv, final_graph.gml, pre_filt_graph.gml,
+               core_alignment_header.embl, core_alignment_filtered_header.embl;
+               panaroo/out/aligned_gene_sequences/ with 2676 per-cluster alignment files.
+    note:      the first genuine fan-in: one panaroo process over all 153 prepared GFFs.
+               Threads = min(total, max(4, min(32, 2 * n_genomes))) = 32 here. Panaroo runs
+               in a TemporaryDirectory under panaroo/ and the result is moved to
+               panaroo/out; panaroo/ is wiped first on a real run. There is no data edge
+               from mobsuite to panaroo. _collect_bakta_gffs_for_genomes returns an empty
+               list if ANY genome stem has no GFF.
+
+    id:        core_alignment
+    label:     Genome-ordered core alignment
+    type:      process
+    tool:      in-process Python and numpy, CoreAlignment.run_core_alignment; minimap2
+               (phylogeny env) only when phylo.order_reference names an external genome.
+    runs:      cohort
+    optional:  not user-optional. Hard gate on panaroo ("Panaroo output required before
+               the core alignment can be ordered."). Reused when
+               core_alignment_reuse_issue finds the inputs' sha256, the ordering settings,
+               the genome set and the output sha256 unchanged.
+    inputs:    stage panaroo: panaroo/out/core_gene_alignment.aln (phylo.core_alignment
+               "full", the default; "filtered" uses core_gene_alignment_filtered.aln) with
+               its core_alignment_header.embl gene blocks, gene_presence_absence.csv;
+               stage bakta: the ordering genome's bakta/<s>/<s>.gff3; user input: the
+               genome FASTAs, read for contiguity (contigs, N50).
+    outputs:   core_alignment/core_gene_alignment.ordered.aln (gene blocks in the
+               ordering genome's order, minus-strand genes reverse-complemented,
+               sanitized to ACGTN-), core_alignment/gene_map.tsv (gene to column range
+               and ordering-genome coordinates), core_alignment/ordering.json (method,
+               ordering genome, candidates, gene counts, diversity, inputs' sha256).
+    note:      the ordering genome is the most contiguous cohort assembly (fewest
+               contigs, then highest N50, then name) placing at least
+               phylo.ordering_min_placed (0.95) of the core genes; unplaced genes are
+               appended. The same pass measures the cohort's mean and max pairwise
+               p-distance and predicts the taxa Gubbins will drop. It is the single core
+               alignment of gubbins, core_tree and fastgear_clades.
+
+    id:        gubbins
+    label:     Recombination filtering
+    type:      process
+    tool:      run_gubbins.py (Gubbins 3.4.3) in the gubbins env inside the tools image,
+               run in a staging folder that replaces gubbins/ on success. Command:
+               run_gubbins.py --prefix core_gene --threads <threads> --seed <phylo.seed>
+               --iterations <phylo.gubbins_iterations> --converge-method <...>
+               --filter-percentage <...> --tree-builder <...> [--outgroup <name>]
+               core_alignment/core_gene_alignment.ordered.aln.
+    runs:      cohort
+    optional:  skipped with a summary (ran false) below phylo.gubbins_min_genomes (4).
+               Reused when gubbins_reuse_issue finds the input sha256, the parameters
+               (threads included) and the Gubbins version unchanged.
+    inputs:    stage core_alignment: the ordered alignment, ordering.json (diversity,
+               predicted dropouts) and gene_map.tsv.
+    outputs:   gubbins/core_gene.final_tree.tre, core_gene.filtered_polymorphic_sites.fasta,
+               core_gene.recombination_predictions.gff, core_gene.per_branch_statistics.csv
+               and the other Gubbins files; gubbins/summary.json (schema 2: parameters,
+               convergence, diversity, longest-branch share, r/m, samples left out,
+               warnings); gubbins/recombination_blocks_genes.tsv (blocks mapped to genes);
+               command logs; genome_set.json.
+    note:      threads = min(total, 64). Never blocks on warnings
+               (gubbins_not_converged, gubbins_high_diversity, gubbins_lineage_structure,
+               gubbins_samples_left_out); a Gubbins failure fails the run.
+
+    id:        core_tree
+    label:     IQ-TREE core genome tree
+    type:      process
+    tool:      mask_gubbins_aln.py then iqtree2 (IQ-TREE 2.4.0), both in the gubbins env.
+               Command: iqtree2 -s gubbins/core_gene.filtered_polymorphic_sites.fasta
+               -fconst a,c,g,t -m MFP -B 1000 --bnni --seed <seed> -T <threads>.
+    runs:      cohort
+    optional:  reused when trees/core_recomb_iqtree/run.json matches (input and
+               recombination GFF sha256, parameters, IQ-TREE version). Gubbins skipped:
+               IQ-TREE on the ordered alignment (tree "core"). Fewer than 4 genomes: no
+               bootstrap; above phylo.iqtree_fast_above_genomes: --fast with SH-aLRT.
+    inputs:    stage gubbins: the filtered polymorphic sites and the recombination GFF;
+               stage core_alignment: the ordered alignment, masked to count the constant
+               sites.
+    outputs:   trees/core_recomb_iqtree/ (.iqtree, .log, .treefile, .contree,
+               .model.gz, run.json), trees/core_recomb.json (stamp).
+    note:      threads = min(total, 16). This is the run's default tree.
+
+    id:        trees_index
+    label:     Rooted trees and tree index
+    type:      process
+    tool:      in-process Python, TreesIndex.write_trees_index (Newick.py), run after
+               core_tree and after phylogeny on every run.
+    runs:      cohort
+    optional:  never skipped; cheap.
+    inputs:    the raw trees and stamps of core_tree, gubbins (final tree) and
+               raxml_snippy_tree; config phylo.outgroup.
+    outputs:   trees/core_recomb.nwk, trees/gubbins_final.nwk, trees/snippy_core.nwk
+               (rooted at midpoint or on the outgroup, support kept with its edge,
+               Snippy's Reference tip renamed), trees/trees.json (what the GUI reads).
+    note:      a tree whose input sha256 no longer matches is left out (tree_stale).
+
+    id:        snippy_core
+    label:     Snippy core alignment
+    type:      process
+    tool:      snippy-core in the phylogeny conda env inside the tools image, with workdir
+               and cwd = snippy/core. Command: snippy-core --ref <reference fasta>
+               --prefix core <all per-sample dirs>.
+    runs:      cohort
+    optional:  skipped when the Snippy loop produced no sample directories, that is a
+               cohort of one genome or every genome equal to the reference; run_phylogeny
+               then writes a trivial one-taxon Newick and creates an empty snippy/core/.
+               Skipped with the rest of the "phylogeny" step on reuse.
+    inputs:    stage snippy_per_sample: all 152 per-sample Snippy output directories, plus
+               the same reference genome FASTA.
+    outputs:   snippy/core/core.full.aln, core.aln, core.ref.fa, core.tab, core.txt and
+               core.vcf, none of them tracked in expected_outputs.json
+    note:      raises if neither core.full.aln nor core.aln appears. The alignment handed
+               to RAxML is the first hit of core.full.aln, then core.aln, that is the FULL
+               alignment, 603 MB here, not the SNP-only core.aln.
+
+    id:        raxml_snippy_tree
+    label:     RAxML SNP tree
+    type:      process
+    tool:      raxml-ng in the phylogeny conda env inside the tools image, the same
+               _run_raxml_tree helper with --prefix snippy_raxml; the bestTree is moved to
+               trees/raw/snippy_core.raxml.nwk, with the stamp trees/snippy_core.json.
+    runs:      cohort
+    optional:  replaced by a trivial one-taxon Newick, the reference stem, when the Snippy
+               loop produced no sample directories, and short-circuited to a trivial tree
+               when the alignment has 2 or fewer taxa. Skipped with the rest of the
+               "phylogeny" step on reuse.
+    inputs:    stage snippy_core: snippy/core/core.full.aln, or core.aln if the full
+               alignment is absent
+    outputs:   trees/raw/snippy_core.raxml.nwk (unrooted, a "Reference" tip), in
+               expected_outputs.json as Runner.PHYLOGENY_OUT_FILES; an old run's
+               trees/snippy_raxml.tree is moved there on reuse
+    note:      fourth sub-node of the single Runner step "phylogeny". run_phylogeny
+               pre-checks that raxml-ng, snippy and snippy-core are all callable before
+               doing any work. RAxML's .raxml.* work files stay in a temp dir and are
+               discarded, so there is no command log for this step in the run directory.
+               It is the secondary tree, labeled "not recombination-corrected".
+
+    id:        fastgear_clades
+    label:     fastGEAR lineages
+    type:      process
+    tool:      fastGEAR on the MATLAB MCR, run as raw argv and the only stage not run
+               through conda run: ToolEnv.container_image_cmd with argv
+               [/opt/run_fastGEAR.sh, /opt/v901, <ordered aln>, fastgear/fastgear_res.mat,
+               /opt/fG_input_specs.txt], workdir fastgear/, extra_env HOME and
+               MCR_CACHE_ROOT = fastgear/mcr_cache. The image is the RUN's container
+               image, bactolomew-tools:0.1.0, not the configured fastgear.image; a native
+               runtime falls back to docker because fastGEAR cannot run outside a
+               container.
+    runs:      cohort
+    optional:  reused only when fastgear/input.json (input sha256, settings, image
+               identity) matches and validate_fastgear_outputs passes; otherwise rerun with
+               the reason logged.
+    inputs:    stage core_alignment: core_alignment/core_gene_alignment.ordered.aln, read
+               in place (N is read as missing like a gap; checked). User input: the stems of the genome
+               FASTAs, used to validate the parsed lineage table. Configuration:
+               bactolomew_config.json fastgear.{image, launcher, mcr_root, specs_file,
+               extra_args}; a non-empty fastgear.image is REQUIRED or the stage raises,
+               even though the launch uses the run's own container image.
+    outputs:   fastgear/sample_clades.tsv, tracked, with columns Sample, FastGearLineage,
+               FastGearCluster, FastGearStrainIndex and FastGearMethod, sorted by strain
+               index, written by BACTolomew from lineage_information.txt;
+               fastgear/fastgear_res.mat, tracked; fastgear/output/
+               lineage_information.txt, tracked; fastgear/fastgear_res_snpData.mat and
+               fastgear/output/recombinations_recent.txt, recombinations_ancestral.txt,
+               cluster_comparison.mat, lineage_comparison.mat, written by fastGEAR itself
+               and untracked; fastgear/input.json; fastgear/libncurses.so.5 (a link that
+               lets the MATLAB runtime start in the tools image); fastgear/mcr_cache/.mcrCache9.0.1/..., 281 files, the directory created by
+               BACTolomew as HOME and MCR_CACHE_ROOT and filled by the MATLAB Compiler
+               Runtime.
+    note:      Runner places this after the phylogeny step, but there is NO data
+               dependency on gubbins or on the trees: its only input is the ordered core
+               alignment. After the container call, BACTolomew parses
+               output/lineage_information.txt with pandas, normalizes column names,
+               rejects duplicate or empty sample names, and asserts the sample set matches
+               the genome stems exactly. Footnote worth keeping: bactolomew_config.json
+               sets fastgear.image = "pgcbioinfo/fastgear:latest" and the CLI and GUI
+               refuse to start without it, but no code path runs that image; label the
+               node with bactolomew-tools:0.1.0.
+
+    id:        chewbbaca
+    label:     cgMLST allele calling
+    type:      process
+    tool:      chewBBACA.py AlleleCall in the chewbbaca conda env inside the tools image.
+               Command: chewBBACA.py AlleleCall -i <tmp>/genomes.txt -g <schema_dir>
+               -o <tmp>/out --cpu <threads>, plus --ptf <training_file> when
+               chewbbaca.training_file is set, --gl <loci_list> when chewbbaca.loci_list
+               is set, then chewbbaca.extra_args. Both are empty in the shipped config.
+               Inside a container runtime the executable is taken straight from
+               ToolEnv.tool_cmd with no probing.
+    runs:      cohort
+    optional:  not user-optional. Skipped by reuse when
+               _validate_chewbbaca_reuse_outputs finds the four tracked files non-empty
+               and results_alleles.tsv with at least one data row, which is what the
+               reference run did. The MLST edge is itself conditional on
+               chewbbaca.auto_select_from_mlst. The stage can also return None without
+               running when no genome file exists or the executable cannot be resolved,
+               and it raises if AlleleCall exits non-zero or no results_alleles.tsv
+               appears.
+    inputs:    user input: all genome FASTAs, absolute paths written one per line into
+               genomes.txt inside a TemporaryDirectory under output/chewbbaca/ and passed
+               with -i. Stage mlst: output/mlst/results.json, read by
+               ChewBBACAWorkflow._select_runtime_schema when chewbbaca.auto_select_from_
+               mlst is true, which it is. Database: db_cgmlst, the schema directory passed
+               as -g, plus DB/cgmlst/scheme_species_catalog.json.
+    outputs:   chewbbaca/out/results_alleles.tsv, results_statistics.tsv,
+               loci_summary_stats.tsv and logging_info.txt, the four tracked
+               CHEWBBACA_OUT_FILES, where results_alleles.tsv has 154 lines, a header plus
+               153 genomes; chewbbaca/out/cds_coordinates.tsv, results_contigsInfo.tsv,
+               invalid_cds.txt, paralogous_counts.tsv and paralogous_loci.tsv, chewBBACA's
+               own output, untracked; chewbbaca/command.stdout.log and command.stderr.log,
+               written by the pipeline, untracked, and only when AlleleCall actually
+               executes.
+    note:      one AlleleCall over the whole cohort, parallelised internally with --cpu 32.
+               The mlst to chewbbaca edge is a REAL data edge but is NOT enforced by
+               Runner: _select_runtime_schema returns early if auto_select_from_mlst is
+               false, and with no mlst/results.json it only logs "chewBBACA schema
+               auto-selection skipped" and keeps the configured schema_dir. It becomes
+               hard once results exist: a tie between species, or a winning MLST scheme
+               with no cgMLST mapping, raises and aborts. Draw the edge dashed. In the
+               reference run all 153 samples are abaumannii_2, which the catalog maps to
+               acinetobacter_baumannii, matching the ACICU_RS* locus columns;
+               run_config.json inputs.chewbbaca records that schema_dir directly. Hard
+               preflight: validate_chewbbaca_settings is the very first statement of
+               _run_workflow_impl, so a bad schema aborts before any stage runs.
+               output/chewbbaca/ is wiped clean at the start of a real run; AlleleCall
+               writes into a TemporaryDirectory under it and ensure_chewbbaca_out moves
+               the result to chewbbaca/out. Nothing else in the pipeline consumes these
+               files; the GUI and the analysis scripts do.
+
+    id:        diamond_markers
+    label:     Build marker DIAMOND DBs
+    type:      process
+    tool:      diamond makedb in the diamond conda env inside the tools image:
+               diamond makedb --in <fasta> --db <tmp>.dmnd --threads N, one call per
+               marker FASTA, sequentially. Each DB is built into a TemporaryDirectory
+               under dmnd/queries/ and moved into place only on success.
+    runs:      cohort, once per run, genome-independent
+    optional:  skipped by reuse when _validate_dmnd_files finds every expected
+               dmnd/queries/<stem>.dmnd present and non-empty; the reference run recorded
+               db_count 14. build_diamond_db_for_files also skips any single .dmnd that
+               already exists.
+    inputs:    stage db_markers: the marker protein FASTAs in DataInput.marker_sequences,
+               14 in the reference run, 13 in the repo today
+    outputs:   dmnd/queries/<marker stem>.dmnd, 14 files in the reference run, all in
+               expected_outputs.json: AMRF_core-AMR, AMRF_core-BMRG, AMRF_plus-AMR,
+               AMRF_plus-BMRG, AMRF_plus-VIRULENCE, BacMet2-EXP-database_BMRG, CARD_AMR,
+               CGE-MGE-Prot_MOBILE, CGE-PlasmidFinder-Prot_PLASMID,
+               CGE-VirulenceFinder-Prot_VIRULENCE, COGorg24_COG, ISFinder-Prot_MOBILE,
+               Phaster-Prophage-Virus-Prot_PHAGE, VFDB-setB-Prot_VIRULENCE. Also
+               annotations/queries/, created empty by Runner.run_diamond; nothing ever
+               writes into it and it is absent from expected_outputs.json. Vestigial: draw
+               it only if you want to be exhaustive.
+    note:      database preparation, not a search: it converts the reference marker FASTAs
+               into DIAMOND indexes once per run directory. Threads =
+               thread_plan["diamond_makedb"] = min(cores, 32) = 32. Its only consumer is
+               collect_annotations, which receives the .dmnd list directly as
+               query_db_files.
+
+    id:        collect_annotations
+    label:     Merge annotations
+    type:      process
+    tool:      mostly pure Python with pandas inside the Runner process, plus ONE external
+               call: diamond blastx through tool_cmd("diamond") in the diamond conda env
+               inside the tools image, with the same hardcoded flags as
+               diamond_reference_loci but sanitize=False, since the query FASTA is already
+               id-clean, and --threads = min(cores, 64) = 64.
+    runs:      cohort
+    optional:  not skippable as a step: it is the one stage with no reuse path and always
+               recomputes. Its DIAMOND sub-call is skipped when reuse_marker_hits is true,
+               that is validate_marker_hit_outputs finds all 14 TSVs and all expected
+               paths exist, or when Bakta produced no annotations, giving an empty frame
+               and so no FASTA, or when query_db_files is empty. It is also the one stage
+               that can close as "partial" instead of failing, when the merged frame is
+               empty. The Bakta half is guarded by ran_bakta: if Bakta did not run, only a
+               warning is logged.
+    inputs:    stage bakta: every bakta/**/*.json, discovered by rglob and sorted by path
+               string, parsed by BaktaWorkflow.parse_multiple_bakta_json; and
+               bakta/<sample>/<sample>.fna, read by FastaUtils.subseq to cut each CDS
+               nucleotide sequence. Stage diamond_markers: dmnd/queries/*.dmnd, passed
+               explicitly as query_db_files. Stage mobsuite: mobsuite/contigs.tsv and
+               plasmids.tsv, re-read off disk by Runner._attach_mobsuite_predictions and
+               load_mobsuite_contig_predictions. Database: db_markers, through
+               DB/catalogs/marker_db_catalog.json for the per-DB category, and
+               db_resistance_meta, through ReferenceGeneCatalog.txt and aro_index.tsv.
+    outputs:   annotations/bakta_vs_queries/bakta_annotations_nt-vs-<marker db>.tsv, 14
+               files, all in expected_outputs.json. NO annotation table on disk: the
+               merged DataFrame, 574416 rows, recorded as run_state.json
+               steps.collect_annotations.rows, is returned in memory to run_workflow and
+               discarded. The code comment is explicit: "No CSVs are written; annotations
+               are kept in-memory only."
+    note:      cohort-scoped: all samples' CDS go into ONE temporary FASTA,
+               bakta_annotations_nt.fasta, written by AnnotationUtils.write_annotation_
+               fasta into a TemporaryDirectory under the run dir and deleted as soon as
+               DIAMOND returns, so it is NOT a persisted file despite naming every output
+               TSV. DIAMOND therefore runs 14 times per run, not per genome.
+               parse_multiple_bakta_json keeps only features of type "cds" and parses the
+               contig number back out of the sanitized contig_<n> header. AnnotationUtils
+               stamps Method = "bakta", derives AnnotationCategory from the product text,
+               and assigns stable ids BKT0000001 onward over the sorted-JSON row order,
+               run_config.annotation_id_strategy "sorted_bakta_json_v1", frozen so a
+               resumed run keeps the same ids. After the search: read_annotations computes
+               Subject_coverage = Align_len / S_len * 100 and derives Method and
+               MarkerCategory by splitting the file stem after "-vs-";
+               collapse_diamond_annotations keeps one best hit per AnnotationID and DB,
+               grouping by DB and not by Method, so AMRF core and plus and
+               AMR / BMRG / VIRULENCE are not merged; ResistanceMetadata joins AMRF rows
+               by protein or nucleotide accession and CARD rows by ARO then protein
+               accession, yielding ResistanceMetadataSource, Alleles, GeneFamilies,
+               DrugClasses, Antibiotics and Mechanisms; infer_annotation_category_and_
+               source reduces the hits to ConsensusCategory, ConsensusSource and
+               ConsensusDonorProduct by CATEGORY_PRIORITY_MAP; then assign_gene_ids and
+               _attach_mobsuite_predictions add 15 MobSuite* columns joined on Sample and
+               normalized Contig. The mobsuite edge is an enrichment dependency rather
+               than a blocking one: with no mobsuite output the MobSuite* columns are
+               simply NA. Runtime: about 14 of the 15 minutes of the otherwise fully
+               reused reference run. AnnotationUtils.add_compound_clusters and compute_gene
+               have no caller anywhere under src/, so no stage exercises them.
+
+  OUTPUTS
+
+    id:        run_finalize
+    label:     Validate and report
+    type:      output
+    tool:      pure Python: RunValidation.validate_completed_run plus
+               Runner._build_run_report, _flush_run_state and _clear_run_lock, in the
+               finally block, so it also runs on failure or stop.
+    runs:      once per run
+    optional:  no: it is in a finally block, so it produces a report for a failed or
+               stopped run too.
+    inputs:    all twelve step results and the whole run directory
+    outputs:   run_report.json with start and end time, status, inputs, per-step records,
+               tools, output_dir and the full output_files listing, 12488 entries in the
+               reference run; run_state.json with final status "success" and
+               outputs_validated true; run.lock.json is deleted, although it is still
+               listed in run_report.json output_files, which is how you can tell the
+               report is written just before the lock is cleared. The report is also
+               printed to stdout.
+    note:      RESULT_REQUIRED_STEPS is exactly the twelve Runner steps. Any step whose
+               status is "success" but whose outputs fail validate_step_outputs is
+               downgraded to "partial", and the run status becomes failed, partial or
+               success accordingly. tools.used is EMPTY in this report, because every step
+               was reused and no external tool was ever launched. If the figure needs a
+               single terminal artifact, the honest one is the run directory plus
+               run_report.json, NOT an annotation table: collect_annotations writes no
+               merged table to disk.
+
+
+4. EDGE LIST
+
+  Setup and configuration edges
+
+    user_genomes -> datainput : absolute genome FASTA paths and stems
+    db_bakta -> datainput : bakta_db path, existence checked
+    db_markers -> datainput : marker FASTA list and stem to category map
+    db_compound -> datainput : compound FASTA list
+    db_cgmlst -> datainput : schema dir and catalog, checked by
+                             validate_chewbbaca_settings
+    datainput -> run_dir_init : validated DataInput object, thread budget, output dir
+    tools_runtime -> run_dir_init : container image and the bind-mount root list
+    db_markers -> db_resistance_meta : catalog resistance_metadata pointers per marker
+
+  Run-directory edges
+
+    run_dir_init -> assembly_qc : run directory paths and thread plan
+    run_dir_init -> bakta : run directory paths and thread plan
+    run_dir_init -> mlst : run directory paths and thread plan
+    run_dir_init -> mobsuite : run directory paths and thread plan
+    run_dir_init -> chewbbaca : run directory paths and thread plan
+    run_dir_init -> diamond_markers : run directory paths and thread plan
+    run_dir_init -> diamond_reference_loci : run directory paths and thread plan
+
+  Data edges into the per-sample and cohort stages
+
+    user_genomes -> assembly_qc : assembled contigs, FASTA, all genomes in one call
+    db_checkm2 -> assembly_qc : uniref100.KO.1.dmnd reference DB
+    user_genomes -> bakta : assembled contigs, FASTA, sanitized to bakta_tmp/<sample>.fna
+    db_bakta -> bakta : Bakta reference DB directory
+    user_genomes -> mlst : assembled contigs, FASTA, one process per genome
+    user_genomes -> mobsuite : assembled contigs, FASTA, deflines renamed to contig_N
+    db_mobsuite -> mobsuite : MOB-suite DB directory, unset in this repo
+    bakta -> panaroo : per-sample CDS annotation, GFF3 plus the sanitized FNA appended
+                       after ##FASTA
+    panaroo -> core_alignment : core gene alignment, its EMBL gene blocks and
+                                gene_presence_absence.csv
+    bakta -> core_alignment : the ordering genome's GFF3 gene positions
+    user_genomes -> core_alignment : genome FASTAs, read for contiguity
+    core_alignment -> gubbins : ordered core alignment, ordering.json, gene_map.tsv
+    gubbins -> core_tree : filtered polymorphic sites and recombination predictions
+    core_alignment -> core_tree : ordered alignment, masked for constant-site counts
+    core_tree -> trees_index : raw IQ-TREE tree and its stamp
+    gubbins -> trees_index : Gubbins final tree and summary.json
+    user_genomes -> snippy_per_sample : assembled contigs, FASTA, plus the reference
+                                        genome FASTA
+    snippy_per_sample -> snippy_core : 152 per-sample Snippy directories with snps.vcf
+    snippy_core -> raxml_snippy_tree : whole-genome core alignment,
+                                       snippy/core/core.full.aln
+    raxml_snippy_tree -> trees_index : raw Snippy tree and its stamp
+    core_alignment -> fastgear_clades : ordered core alignment,
+                                        core_alignment/core_gene_alignment.ordered.aln
+    user_genomes -> fastgear_clades : genome stems, used to validate the lineage table
+    mlst -> chewbbaca : mlst/results.json ST and scheme calls, used to auto-select the
+                        cgMLST schema; conditional on chewbbaca.auto_select_from_mlst,
+                        draw dashed
+    db_cgmlst -> chewbbaca : cgMLST schema directory and scheme_species_catalog.json
+    user_genomes -> chewbbaca : assembled contigs, FASTA, listed in genomes.txt
+    db_markers -> diamond_markers : marker protein FASTAs
+    db_compound -> diamond_reference_loci : compound element protein FASTA
+    user_genomes -> diamond_reference_loci : assembled contigs, FASTA, sanitized per
+                                             genome
+    bakta -> collect_annotations : per-sample bakta JSON CDS records plus
+                                   bakta/<sample>/<sample>.fna for CDS nucleotides
+    diamond_markers -> collect_annotations : dmnd/queries/*.dmnd marker indexes
+    mobsuite -> collect_annotations : mobsuite/contigs.tsv plasmid and contig
+                                      predictions, enrichment only
+    db_markers -> collect_annotations : per-DB marker category from
+                                        marker_db_catalog.json
+    db_resistance_meta -> collect_annotations : ReferenceGeneCatalog.txt and
+                                                aro_index.tsv resistance annotations
+    collect_annotations -> run_finalize : in-memory merged annotation frame row count and
+                                          step result
+
+  Execution-order edges, the Runner spine
+
+    assembly_qc -> bakta : [order only, no data]
+    bakta -> mlst : [order only, no data]
+    mlst -> mobsuite : [order only, no data]
+    mobsuite -> panaroo : [order only, no data]
+    trees_index -> snippy_per_sample : [order only, no data]
+    raxml_snippy_tree -> fastgear_clades : [order only, no data]
+    fastgear_clades -> chewbbaca : [order only, no data]
+    chewbbaca -> diamond_markers : [order only, no data]
+    diamond_markers -> diamond_reference_loci : [order only, no data]
+    diamond_reference_loci -> collect_annotations : [order only, no data]
+
+  Edge count: 58 edges over 29 nodes. 48 are data edges, 10 are execution order only.
+
+  Edges deliberately NOT drawn, because they do not exist in the code: assembly_qc to any
+  downstream stage, no sample is ever filtered on Quality; mobsuite to panaroo;
+  diamond_reference_loci to collect_annotations;
+  chewbbaca to anything inside the pipeline. tools_runtime is not drawn into every
+  process node, although every external tool call goes through it; see the layout note.
+
+
+5. LAYOUT GUIDANCE
+
+  Suggested shape: a tall flowchart, top to bottom, with 9 ranks. Setup sits in a band at
+  the top, the databases sit in a column down the left, the stages run down the middle,
+  and the report closes at the bottom.
+
+    Rank 0, inputs and databases, side by side across the top:
+      user_genomes, tools_runtime, db_bakta, db_checkm2, db_markers, db_compound,
+      db_cgmlst, db_mobsuite. db_resistance_meta sits just under db_markers, since it is
+      its only successor. These nodes are independent of one another and of the run; draw
+      them in a distinct shape, for example a cylinder or a rounded box, and in a lighter
+      fill than the process nodes.
+
+    Rank 1: datainput, then run_dir_init directly beneath it. Everything above funnels
+      into these two, which is the first fan-in of the figure.
+
+    Rank 2, the four run-directory-only stages, side by side because they share only the
+      run directory and exchange no data with each other:
+      assembly_qc, bakta, mlst, mobsuite. Note for the caption: they LOOK parallel and
+      are logically independent, but the Runner executes them one after another. Draw the
+      faint order spine through them so this is not mistaken for concurrency.
+
+    Rank 3: panaroo. This is the first real fan-in: 153 per-sample Bakta GFF3 files
+      collapse into one pangenome run. Draw the bakta to panaroo edge as a bundle, or
+      annotate it with "x 153 samples", to make the fan-in visible.
+
+    Rank 4: core_alignment, then gubbins, core_tree and trees_index. core_alignment is
+      the branch node of the core genome: gubbins, core_tree and fastgear_clades all
+      read its ordered alignment.
+
+    Rank 5, the phylogeny step (the Snippy tree), which is ONE Runner step containing
+      three sub-nodes. Draw it as a labelled container box titled "phylogeny" holding,
+      in internal order: snippy_per_sample, then snippy_core, then raxml_snippy_tree.
+      Inside the box the fan-out and fan-in happen again: snippy_per_sample is per sample
+      (152 runs, the reference excluded) and snippy_core collapses those 152 directories
+      back into one alignment. Its raw tree joins trees_index.
+
+    Rank 6: fastgear_clades, fed only by core_alignment, and chewbbaca, fed by db_cgmlst and,
+      dashed, by mlst. These two are independent of each other.
+
+    Rank 7: diamond_markers and diamond_reference_loci. diamond_markers is a database
+      preparation node, not a search; diamond_reference_loci is the only per-sample
+      DIAMOND search. They are independent of each other; only the order spine links them.
+
+    Rank 8: collect_annotations. This is the second big fan-in: Bakta JSON for all
+      samples, the 14 marker DIAMOND indexes, the MOB-suite contig table and both
+      metadata catalogues meet here. Draw four or five arrow heads converging.
+
+    Rank 9: run_finalize, the terminal node.
+
+  Fan-out and fan-in, stated explicitly for the figure:
+    Fan-out from user_genomes: one arrow per per-sample stage, that is bakta, mlst,
+    mobsuite, snippy_per_sample, diamond_reference_loci, plus the two cohort stages that
+    read all genomes at once, assembly_qc and chewbbaca.
+    Fan-in at panaroo, from all Bakta outputs.
+    Fan-in at snippy_core, from all per-sample Snippy directories.
+    Fan-in at collect_annotations, from bakta, diamond_markers, mobsuite, db_markers and
+    db_resistance_meta.
+    Fan-in at run_finalize, from the whole run directory; only the collect_annotations
+    edge is drawn.
+
+  Two nodes that should be visually flagged as per sample even though they emit one
+  cohort file: mlst, whose 153 processes are collected into one CSV and one JSON, and
+  mobsuite, whose 153 mob_recon runs are summarised into three cohort tables.
+
+  tools_runtime: every process node executes inside it. Rather than 15 arrows, either
+  draw one edge tools_runtime -> run_dir_init and put a note in the legend ("all external
+  tools run as conda envs inside bactolomew-tools:0.1.0"), or draw the whole stage column
+  inside one large container box labelled with the image name. The second reads better.
+
+  Legend the figure needs: solid arrow = data; dashed arrow = control or freshness gate,
+  or a conditional data edge; faint arrow = execution order only, no data; cylinder =
+  database prepared outside the run; a per-sample badge on the per-sample stages.
+
+
+6. MERMAID BLOCK
+
+flowchart TD
+
+  subgraph INPUTS
+    user_genomes["Genome assemblies"]
+  end
+
+  subgraph DATABASES_AND_SETUP
+    datainput["Validate inputs"]
+    run_dir_init["Open run directory"]
+    tools_runtime["Tool runtime"]
+    db_bakta[("Bakta database")]
+    db_checkm2[("CheckM2 database")]
+    db_markers[("Marker sequence catalogue")]
+    db_compound[("Compound element catalogue")]
+    db_resistance_meta[("Resistance metadata")]
+    db_cgmlst[("cgMLST schemes")]
+    db_mobsuite[("MOB-suite database")]
+  end
+
+  subgraph PER_SAMPLE_STAGES
+    bakta["Bakta annotation"]
+    mlst["MLST typing"]
+    mobsuite["Plasmid reconstruction"]
+    snippy_per_sample["Snippy variant calling"]
+    diamond_reference_loci["Reference locus screen"]
+  end
+
+  subgraph COHORT_STAGES
+    assembly_qc["Assembly QC"]
+    panaroo["Panaroo pangenome"]
+    core_alignment["Genome-ordered core alignment"]
+    gubbins["Recombination filtering"]
+    core_tree["IQ-TREE core genome tree"]
+    trees_index["Rooted trees and tree index"]
+    snippy_core["Snippy core alignment"]
+    raxml_snippy_tree["RAxML SNP tree"]
+    fastgear_clades["fastGEAR lineages"]
+    chewbbaca["cgMLST allele calling"]
+    diamond_markers["Build marker DIAMOND DBs"]
+    collect_annotations["Merge annotations"]
+  end
+
+  subgraph OUTPUTS
+    run_finalize["Validate and report"]
+  end
+
+  user_genomes --> |"genome FASTA paths"| datainput
+  db_bakta --> |"bakta_db path"| datainput
+  db_markers --> |"marker FASTA list"| datainput
+  db_compound --> |"compound FASTA list"| datainput
+  db_cgmlst --> |"schema dir and catalog"| datainput
+  datainput --> |"validated DataInput"| run_dir_init
+  tools_runtime --> |"image and bind roots"| run_dir_init
+  db_markers --> |"resistance metadata pointers"| db_resistance_meta
+
+  run_dir_init --> |"run dir and thread plan"| assembly_qc
+  run_dir_init --> |"run dir and thread plan"| bakta
+  run_dir_init --> |"run dir and thread plan"| mlst
+  run_dir_init --> |"run dir and thread plan"| mobsuite
+  run_dir_init --> |"run dir and thread plan"| chewbbaca
+  run_dir_init --> |"run dir and thread plan"| diamond_markers
+  run_dir_init --> |"run dir and thread plan"| diamond_reference_loci
+
+  user_genomes --> |"assembled contigs FASTA"| assembly_qc
+  db_checkm2 --> |"uniref100.KO.1.dmnd"| assembly_qc
+  user_genomes --> |"assembled contigs FASTA"| bakta
+  db_bakta --> |"Bakta reference DB"| bakta
+  user_genomes --> |"assembled contigs FASTA"| mlst
+  user_genomes --> |"assembled contigs FASTA"| mobsuite
+  db_mobsuite --> |"MOB-suite DB, unset here"| mobsuite
+
+  bakta --> |"CDS annotation GFF3 plus FNA"| panaroo
+  panaroo --> |"core gene alignment and gene blocks"| core_alignment
+  bakta --> |"ordering genome GFF3"| core_alignment
+  user_genomes --> |"contiguity"| core_alignment
+  core_alignment --> |"ordered alignment"| gubbins
+  gubbins --> |"filtered sites, recombination GFF"| core_tree
+  core_alignment --> |"masked for constant sites"| core_tree
+  core_tree --> |"raw tree and stamp"| trees_index
+  gubbins --> |"final tree"| trees_index
+  user_genomes --> |"contigs plus reference FASTA"| snippy_per_sample
+  snippy_per_sample --> |"per-sample snps.vcf dirs"| snippy_core
+  snippy_core --> |"core.full.aln"| raxml_snippy_tree
+  raxml_snippy_tree --> |"raw Snippy tree"| trees_index
+  core_alignment --> |"ordered alignment"| fastgear_clades
+  user_genomes --> |"genome stems for validation"| fastgear_clades
+
+  mlst -.-> |"results.json ST calls, conditional"| chewbbaca
+  db_cgmlst --> |"cgMLST schema dir"| chewbbaca
+  user_genomes --> |"assembled contigs FASTA"| chewbbaca
+
+  db_markers --> |"marker protein FASTAs"| diamond_markers
+  db_compound --> |"compound protein FASTA"| diamond_reference_loci
+  user_genomes --> |"assembled contigs FASTA"| diamond_reference_loci
+
+  bakta --> |"bakta JSON CDS plus FNA"| collect_annotations
+  diamond_markers --> |"marker .dmnd indexes"| collect_annotations
+  mobsuite --> |"contigs.tsv predictions"| collect_annotations
+  db_markers --> |"marker categories"| collect_annotations
+  db_resistance_meta --> |"AMRF and CARD annotations"| collect_annotations
+  collect_annotations --> |"merged frame and step result"| run_finalize
+
+  assembly_qc -.-> |"order only"| bakta
+  bakta -.-> |"order only"| mlst
+  mlst -.-> |"order only"| mobsuite
+  mobsuite -.-> |"order only"| panaroo
+  trees_index -.-> |"order only"| snippy_per_sample
+  raxml_snippy_tree -.-> |"order only"| fastgear_clades
+  fastgear_clades -.-> |"order only"| chewbbaca
+  chewbbaca -.-> |"order only"| diamond_markers
+  diamond_markers -.-> |"order only"| diamond_reference_loci
+  diamond_reference_loci -.-> |"order only"| collect_annotations
+
+  linkStyle default stroke-width:1.5px
+
+  END OF MERMAID BLOCK
+
+
+7. NOTES AND CAVEATS
+
+  Execution order. Verified against the twelve literal _step_start calls in
+  Runner._run_workflow_impl, Runner.py lines 1278 to 1726, strictly sequential in one
+  Python thread: assembly_qc, bakta, mlst, mobsuite, panaroo, core_alignment,
+  gubbins, core_tree, phylogeny, fastgear_clades, chewbbaca, diamond_markers, diamond_reference_loci,
+  collect_annotations, then the finally block, which runs validate_completed_run and
+  writes run_report.json and run_state.json and clears run.lock.json. There is no
+  scheduler, no DAG object and no branch that reorders them. run_state.json for the
+  reference run lists the steps in exactly this order.
+
+  Nothing runs in parallel at stage level. Runner.py has no ThreadPoolExecutor,
+  ProcessPool, multiprocessing or asyncio. The only concurrency in the whole pipeline
+  package is inside MlstWorkflow.run_mlst. bakta, mobsuite, snippy and
+  diamond_reference_loci are plain for-loops; their per-stage concurrency is the tool's
+  own --threads or --cpus, taken from _compute_thread_plan. The figure may show data
+  edges cutting across the chain, but it must NOT show two stages side by side as
+  concurrent without saying so in the caption.
+
+  Every stage is skippable by reuse, not by configuration. The pattern is identical: run
+  the stage's validator against the existing run directory and, if clean, close the step
+  with reason "reused_existing_output" without launching the tool. collect_annotations is
+  the sole stage with no reuse path, although it does reuse the 14 marker-hit TSVs when
+  they validate. Eleven of the twelve steps in the reference run are marked
+  reused_existing_output; only collect_annotations actually did work. So "optional" in
+  section 3 almost always means "reusable", not "configurable off".
+
+  The only hard gates the code enforces beyond data flow:
+    1. panaroo on bakta, through the ran_bakta flag. If not ran_bakta, panaroo is
+       "skipped" with reason "bakta_not_run". Because it is skipped and not failed, a
+       Bakta-less run does not stop at panaroo, it stops at gubbins.
+    2. core_alignment on panaroo: raises "Panaroo output required before the core
+       alignment can be ordered."
+    3. Freshness by input stamps (since 2026-10): core_alignment, gubbins, core_tree
+       and fastgear_clades are reused only when the sha256 of their input, their
+       parameters and the tool version match what they recorded; a changed input reruns
+       the step and everything downstream of it, with the reason logged.
+
+  The three phylogeny sub-nodes are ONE Runner step. snippy_per_sample, snippy_core and
+  raxml_snippy_tree are all inside the single step named "phylogeny".
+  They succeed or fail together and are reused together. If the figure prefers a single
+  box, collapse them and label the box "per-sample Snippy plus cohort RAxML".
+
+  Do not draw QC as a filter. Nothing downstream reads assembly_qc/summary.tsv and no
+  stage is gated on the Quality column. No code filters CFG.genomes on it.
+
+  Dead code, one footnote at most.
+  AnnotationUtils.add_compound_clusters and compute_gene have no caller under src/.
+  The max_target_seqs=1 argument of run_diamond_annotations is dead.
+
+  Files on disk that belong to no stage. All 12587 files in the reference run are
+  attributable except 100 .fai index files: 93 under bakta/<sample>/ and 7 under
+  mobsuite/per_sample/<sample>/. run_report.json output_files is exactly 100 entries
+  short of the current disk set and the missing 100 are precisely those; their mtimes,
+  2026-08-21, postdate the run and every other file; and a grep for samtools, faidx or
+  pysam across src/ finds nothing. They were written out of band. Do not draw them.
+  Three leftover temporary directories are also not outputs:
+  annotations/reference_loci/tmpedwy_4n4 and tmpvq5wkvn2, from interrupted DIAMOND calls,
+  and gubbins/tmp1tj7krj1, from an interrupted Gubbins run.
+
+  Unresolved: which runtime and which tool versions the reference run used.
+  run_report.json records tools.used == [] and tools.versions == {}, because every step
+  was closed as reused_existing_output and tools_used.add is only reached in the non-reuse
+  branches. Runtime "docker" and image bactolomew-tools:0.1.0 come from the current
+  bactolomew_config.json, not from the run. The mlst version, the PubMLST DB version and
+  the installed chewBBACA version could not be established read-only; the string 3.5.4
+  comes only from the SCHEMA_CONFIG dict that ChewbbacaSchemaBuild writes into
+  .schema_config. Do not put tool version numbers in the figure except bakta 1.10.4,
+  which Utils.bakta_allowed_versions pins.
+
+  Unresolved: the run's own timestamps are internally inconsistent. run_state.json and
+  run_report.json record 2026-07-03T13:46 to 14:01, but the files have mtime 2026-07-08
+  14:02, and the contents of mlst/, chewbbaca/out and bakta/*.log span 28 May, 3 June and
+  8 July. The directory is a faithful record of WHICH files each stage produces, but not
+  of when, nor with what commands.
+
+  Unresolved: the run id. runs/sample_78eaa9126850/run_78eaa9126850 matches no generator
+  in the code; _new_attempt_id produces
+  sample_<sha1 first 12>__run_<YYYYmmdd_HHMMSS_ffffff>. It was either passed in as
+  DataInput.run_id or the directory was renamed by hand. Do not present "run_<hash>" as
+  the naming convention.
+
+  Unresolved: there is no terminal annotation artifact. collect_annotations writes no
+  annotation table anywhere; the 574416-row DataFrame is returned to run_workflow and
+  discarded. Whatever consumes it, the annotation_explorer_polars GUI and its cache,
+  reads the run directory separately, outside the pipeline package. If the figure needs a
+  terminal artifact, use the run directory plus run_report.json.
+
+  Phylogeny rework of 2026-10 (PHYLOGENY_REWORK_2026-10-10.md). The reference run's
+  files described above (gubbins/input, trees/core_gene_tree.nwk, trees/snippy_raxml.tree,
+  fastgear/input) predate it; a resume rebuilds core_alignment, gubbins, core_tree and
+  fastgear_clades and moves the Snippy tree to trees/raw/.
+
+  fastGEAR image discrepancy. bactolomew_config.json sets
+  fastgear.image = "pgcbioinfo/fastgear:latest" and the CLI and GUI refuse to start
+  without it, but no code path runs that image: the launch uses the run's own
+  bactolomew-tools:0.1.0. Label the node with the latter.
+
+  Marker database count. The run used 14 marker FASTAs including COGorg24_COG.fasta with
+  category "COG"; the repo holds 13 today and marker_db_catalog.json has 13 entries. Say
+  "14 in this run" or "13 in the repo today", not a bare present-tense count.
+
+  Snippy reference. GCA_028622775.1.fna was supplied explicitly, not chosen by the code's
+  default, which would have picked 20038ENE2.fna. Do not caption it as auto-selected.
+
+  MOB-suite table schema drift. mobsuite/contigs.tsv on disk has 28 columns and no
+  PlasmidID, while MOBSUITE_CONTIG_COLUMNS in the current code defines 29 with PlasmidID
+  fourth. Do not caption contigs.tsv as carrying a PlasmidID.
+
+  Minor and unverified. _find_fasta_for_gff falls back to a warning and writes a Panaroo
+  input GFF without its ##FASTA block if the matching Bakta .fna is missing, which
+  Panaroo would likely reject; all 153 prepared GFFs exist in this run, but not every one
+  was opened to confirm its ##FASTA block. ChewbbacaSchemaBuild.register_schema writes
+  into bactolomew_config.json inside a bare try/except, so a schema could be in the
+  catalog without appearing in chewbbaca.available_schemas; not all 34 were checked.
+
+END OF SPECIFICATION

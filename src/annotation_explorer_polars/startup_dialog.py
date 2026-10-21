@@ -14,19 +14,20 @@ from typing import TYPE_CHECKING, Callable, List, Optional
 
 from PyQt6 import QtCore, QtWidgets
 
-from .run_progress import RunProgressDialog
+from .run_progress import RunProgressDialog, pending_text_for, status_bar_state
 from .constants import RUN_CONFIG_FILENAME, RUN_LOCK_FILENAME, RUN_STOP_FILENAME
 from .run_expectations import (
     classify_expected_path,
     describe_run_status,
     expected_output_exists,
+    load_run_state,
     load_run_status,
     resolve_expected_files,
     run_allows_resume,
     run_allows_view,
     run_is_active,
-    summarize_pending_outputs,
 )
+from .run_steps import RunSteps, summarize_run_steps
 
 if TYPE_CHECKING:
     from pipeline.DataInput import DataInput
@@ -39,8 +40,7 @@ class RunEntry:
     sample_count: Optional[int]
     path: Path
     run_config: Optional[dict]
-    expected_total: int
-    expected_found: int
+    steps: RunSteps
     running: bool
     status: str
     status_text: Optional[str]
@@ -98,7 +98,9 @@ def _ensure_app_config(
     *,
     dev_mode: bool = False,
 ) -> Optional[dict]:
-    from .first_time_setup import FirstTimeSetupDialog, apply_first_time_setup, collect_setup_missing_paths
+    from pipeline.Setup import collect_setup_missing_paths
+
+    from .first_time_setup import FirstTimeSetupDialog
 
     root = _project_root()
     config_path = root / "bactolomew_config.json"
@@ -112,16 +114,8 @@ def _ensure_app_config(
     if not missing:
         return config
 
-    dlg = FirstTimeSetupDialog(missing=missing, parent=parent, dev_mode=dev_mode)
+    dlg = FirstTimeSetupDialog(parent=parent, dev_mode=dev_mode)
     if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-        return None
-    result = dlg.result()
-    if result is None:
-        return None
-    try:
-        apply_first_time_setup(result)
-    except Exception as exc:
-        QtWidgets.QMessageBox.critical(parent, "Setup failed", str(exc))
         return None
     return _load_app_config()
 
@@ -148,14 +142,15 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _load_catalog_entries(path: Path) -> list[tuple[Path, str]]:
+def _load_catalog_entries(path: Path) -> list[tuple[Path, str]] | None:
+    """The catalog's (path, category) entries, or None when it cannot be read."""
     from pipeline.DbCatalog import load_db_catalog
 
     try:
         catalog = load_db_catalog(path)
     except Exception as exc:
         QtWidgets.QMessageBox.critical(None, "Catalog error", f"Failed to load catalog: {path}\n{exc}")
-        return []
+        return None
     entries: list[tuple[Path, str]] = []
     for _name, info in (catalog or {}).items():
         if not isinstance(info, dict):
@@ -169,6 +164,40 @@ def _load_catalog_entries(path: Path) -> list[tuple[Path, str]]:
     return entries
 
 
+# "Not now" before a new run: not asked again before new runs in this session (a run that
+# then needs a download stops at its chewBBACA step and its Resume asks again).
+_TERMS_DECLINED_FOR_NEW_RUNS = False
+
+
+def ask_cgmlst_terms_before_run(
+    parent: QtWidgets.QWidget, output_dir: Optional[Path], chewbbaca_config: Optional[dict]
+) -> None:
+    """Before a run (``output_dir`` None for a new one) whose chewBBACA step may install its
+    species' scheme from cgMLST.org: the cgMLST.org terms, unless they are accepted ("Not
+    now" starts the run anyway; it stops at the chewBBACA step if it needs a download).
+    A new run's species is not known yet, so after "Not now" later new runs of this session
+    are not asked again; a Resume that needs a download is."""
+    global _TERMS_DECLINED_FOR_NEW_RUNS
+    from pipeline.ChewBBACAWorkflow import cgmlst_terms_accepted, run_may_install_schema
+    from pipeline.CgmlstInstall import default_dest
+
+    from .cgmlst_download_dialog import confirm_cgmlst_terms
+
+    if cgmlst_terms_accepted(config=chewbbaca_config):
+        return
+    if output_dir is None and _TERMS_DECLINED_FOR_NEW_RUNS:
+        return
+    if output_dir is not None:
+        steps = (load_run_state(output_dir) or {}).get("steps")
+        step = steps.get("chewbbaca") if isinstance(steps, dict) else None
+        if isinstance(step, dict) and step.get("status") == "success":
+            return
+    if run_may_install_schema(output_dir, chewbbaca_config):
+        accepted = confirm_cgmlst_terms(parent, default_dest(), before_run=True)
+        if output_dir is None and not accepted:
+            _TERMS_DECLINED_FOR_NEW_RUNS = True
+
+
 def _find_active_run(exclude: Optional[Path] = None) -> Optional[Path]:
     runs_dir = runs_root()
     if not runs_dir.exists():
@@ -180,6 +209,22 @@ def _find_active_run(exclude: Optional[Path] = None) -> Optional[Path]:
         if run_is_active(run_dir):
             return run_dir
     return None
+
+
+def _cgmlst_stop_text(status_info: dict[str, object]) -> str:
+    """The card line of a run stopped at its chewBBACA step for want of a cgMLST scheme
+    ("" for any other failure)."""
+    from pipeline.ChewBBACAWorkflow import CGMLST_NO_SCHEMA_FOR_SPECIES, CGMLST_TERMS_NOT_ACCEPTED
+
+    state = status_info.get("state")
+    steps = state.get("steps") if isinstance(state, dict) else None
+    step = steps.get("chewbbaca") if isinstance(steps, dict) else None
+    code = step.get("code") if isinstance(step, dict) and step.get("status") == "failed" else ""
+    if code == CGMLST_NO_SCHEMA_FOR_SPECIES:
+        return "Failed: no cgMLST scheme. Import one in Settings > Add schema, then Resume."
+    if code == CGMLST_TERMS_NOT_ACCEPTED:
+        return "Failed: cgMLST.org terms not accepted. Click Resume to accept them."
+    return ""
 
 
 def _compact_run_status(
@@ -199,7 +244,7 @@ def _compact_run_status(
     if status == "interrupted":
         return "Interrupted. Click Resume to continue."
     if status == "failed":
-        return "Failed. Click Resume to retry."
+        return _cgmlst_stop_text(status_info) or "Failed. Click Resume to retry."
     if status == "partial":
         if pending_text:
             return pending_text
@@ -207,34 +252,42 @@ def _compact_run_status(
     return full_status or pending_text or "Status unknown. Click Resume to continue."
 
 
-# --- shared control styling (matches the app's light / #2f6fed design language) ---
-_PRIMARY_BTN = (
-    "QPushButton{background:#2f6fed;color:#ffffff;border:none;border-radius:8px;"
-    "padding:6px 18px;font-weight:600;}"
-    "QPushButton:hover{background:#295fd0;}"
-    "QPushButton:disabled{background:#c6d3e6;color:#eef3f8;}"
-)
-_SECONDARY_BTN = (
-    "QPushButton{background:#ffffff;color:#1f2c3b;border:1px solid #cdd6e0;border-radius:8px;"
-    "padding:6px 14px;font-weight:600;}"
-    "QPushButton:hover{background:#f2f6fb;border-color:#b9c9de;}"
-    "QPushButton:disabled{color:#aab6c4;border-color:#e6ecf3;}"
-)
-_GHOST_BTN = (
-    "QPushButton{background:transparent;color:#64748b;border:none;border-radius:8px;"
-    "padding:6px 14px;font-weight:600;}"
-    "QPushButton:hover{background:#e9eef4;color:#1f2c3b;}"
-)
+def _repolish(widget: QtWidgets.QWidget) -> None:
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
 
 
-def _pill_style(fg: str, r: int, g: int, b: int) -> str:
-    return (
-        f"color:{fg};background:rgba({r},{g},{b},0.13);border:1px solid rgba({r},{g},{b},0.32);"
-        "border-radius:9px;padding:2px 10px;font-weight:700;font-size:10px;"
-    )
+# Vertical gap between two run cards in the start window's list.
+_CARD_GAP = 8
+
+
+class _ElidedLabel(QtWidgets.QLabel):
+    """A one-line label that elides its text in the middle when it does not fit;
+    the full text is then its tooltip."""
+
+    def __init__(self, text: str, parent: Optional[QtWidgets.QWidget] = None) -> None:
+        super().__init__(text, parent)
+        self._full_text = text
+
+    def sizeHint(self) -> QtCore.QSize:  # type: ignore[override]
+        hint = super().sizeHint()
+        return QtCore.QSize(self.fontMetrics().horizontalAdvance(self._full_text) + 2, hint.height())
+
+    def minimumSizeHint(self) -> QtCore.QSize:  # type: ignore[override]
+        return QtCore.QSize(40, super().minimumSizeHint().height())
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        shown = self.fontMetrics().elidedText(self._full_text, QtCore.Qt.TextElideMode.ElideMiddle, self.width())
+        if shown != self.text():
+            self.setText(shown)
+        self.setToolTip(self._full_text if shown != self._full_text else "")
 
 
 class RunCard(QtWidgets.QFrame):
+    """One run in the start window: name, samples, step progress, status, actions.
+    Styled by the theme (QFrame#RunCard, stepBar)."""
+
     def __init__(
         self,
         entry: RunEntry,
@@ -247,24 +300,18 @@ class RunCard(QtWidgets.QFrame):
         super().__init__(parent)
         self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.setObjectName("RunCard")
-        self.setStyleSheet(
-            """
-            QFrame#RunCard {
-                background: #ffffff;
-                border: 1px solid #dbe3ec;
-                border-radius: 14px;
-            }
-            QFrame#RunCard:hover {
-                border: 1px solid #b9c9de;
-                background: #fcfdff;
-            }
-            """
-        )
+        self.setProperty("selected", False)
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(9)
-        title = QtWidgets.QLabel(entry.sample_set_id or entry.run_id)
-        title.setStyleSheet("font-weight: 700; font-size: 14px; color: #172433;")
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(6)
+
+        title_row = QtWidgets.QHBoxLayout()
+        title_row.setSpacing(8)
+        title = _ElidedLabel(entry.sample_set_id or entry.run_id)
+        title.setProperty("role", "runTitle")
+        title_row.addWidget(title, 1)
+        layout.addLayout(title_row)
+
         attempt_label = entry.run_id
         if entry.sample_count is None:
             sample_text = "Samples: unknown"
@@ -272,83 +319,50 @@ class RunCard(QtWidgets.QFrame):
             sample_text = f"{entry.sample_count} samples"
         subtitle_bits = [attempt_label, sample_text]
         subtitle = QtWidgets.QLabel(" • ".join(bit for bit in subtitle_bits if bit))
-        subtitle.setStyleSheet("color: #64748b; font-size: 11px;")
-        layout.addWidget(title)
+        subtitle.setProperty("role", "runMeta")
         layout.addWidget(subtitle)
 
+        steps = entry.steps
         progress = QtWidgets.QProgressBar()
-        progress.setMinimum(0)
-        progress.setMaximum(100)
-        pct = 0
-        if entry.expected_total > 0:
-            if entry.expected_found >= entry.expected_total:
-                pct = 100
-            else:
-                pct = min(99, int((entry.expected_found * 100) / entry.expected_total))
-        elif entry.can_view:
-            pct = 100
-        progress.setValue(max(0, min(100, pct)))
+        progress.setProperty("role", "stepBar")
+        progress.setRange(0, 1000)
+        fraction = steps.fraction
+        if not steps.rows and entry.can_view:
+            fraction = 1.0
+        progress.setValue(int(round(fraction * 1000)))
         progress.setTextVisible(False)
-        progress.setFixedHeight(8)
-        progress.setStyleSheet(
-            "QProgressBar {"
-            "  background: #e6ecf4;"
-            "  border: none;"
-            "  border-radius: 4px;"
-            "}"
-            "QProgressBar::chunk {"
-            "  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5b8bf2, stop:1 #2f6fed);"
-            "  border-radius: 4px;"
-            "}"
-        )
-        layout.addSpacing(2)
+        progress.setProperty("state", "running" if entry.running else status_bar_state(entry.status))
+        layout.addSpacing(4)
         layout.addWidget(progress)
+        layout.addSpacing(2)
 
-        if entry.expected_total > 0:
-            frac_text = f"{entry.expected_found} / {entry.expected_total}"
-        else:
-            frac_text = f"{pct}%"
-
-        status_text = ""
-        pill_style = ""
+        # While running: "Step 9 of 15 · Gubbins · 14 min"; otherwise the status sentence.
         if entry.running:
-            status_text = entry.status_text or "Running"
-            pill_style = _pill_style("#2f6fed", 47, 111, 237)
-        elif entry.status == "success":
-            status_text = entry.status_text or "Completed"
-            pill_style = _pill_style("#0f7a37", 15, 157, 107)
-        elif entry.status in {"failed", "interrupted"}:
-            status_text = entry.status_text or "Failed"
-            pill_style = _pill_style("#c0322b", 220, 38, 38)
-        elif entry.status == "stopped":
-            status_text = entry.status_text or "Stopped"
-            pill_style = _pill_style("#a86612", 217, 119, 6)
-        elif entry.status_text:
-            status_text = entry.status_text
-            pill_style = _pill_style("#a86612", 217, 119, 6)
-
-        status_row = QtWidgets.QHBoxLayout()
-        status_row.setSpacing(6)
-        if status_text:
-            status = QtWidgets.QLabel(status_text)
-            status.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.NoTextInteraction)
-            status.setSizePolicy(QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Fixed)
-            status.setStyleSheet(pill_style)
-            detail = entry.status_detail or entry.status_text
-            if detail and detail != status_text:
-                status.setToolTip(detail)
-            status_row.addWidget(status)
-        status_row.addStretch(1)
-        frac = QtWidgets.QLabel(frac_text)
-        frac.setStyleSheet("color:#8a99ab; font-size:11px; font-weight:600;")
-        status_row.addWidget(frac)
-        layout.addLayout(status_row)
+            line_text = steps.step_line() or entry.status_text or "Running"
+        else:
+            line_text = entry.status_text or ""
+        info_row = QtWidgets.QHBoxLayout()
+        info_row.setSpacing(10)
+        info = QtWidgets.QLabel(line_text)
+        info.setProperty("role", "runStep")
+        info.setWordWrap(True)
+        info.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.NoTextInteraction)
+        detail = entry.status_detail or entry.status_text
+        if detail and detail != line_text:
+            info.setToolTip(detail)
+        info_row.addWidget(info, 1)
+        if steps.rows and not entry.running:
+            count = QtWidgets.QLabel(f"{steps.finished} / {steps.total} steps")
+            count.setProperty("role", "runCount")
+            info_row.addWidget(count, 0, QtCore.Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(info_row)
 
         btn_row = QtWidgets.QHBoxLayout()
+        btn_row.setSpacing(6)
         btn_row.addStretch(1)
         view_btn = QtWidgets.QPushButton("View")
         view_btn.setEnabled(entry.can_view)
-        view_btn.setStyleSheet(_PRIMARY_BTN)
+        view_btn.setProperty("role", "primary")
         view_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         if not entry.can_view:
             view_btn.setToolTip(
@@ -358,7 +372,6 @@ class RunCard(QtWidgets.QFrame):
                 or "This run is not ready to open."
             )
         view_btn.clicked.connect(lambda: on_view(entry) if on_view else None)
-        btn_row.addWidget(view_btn)
 
         if not entry.can_view:
             monitor_btn = QtWidgets.QPushButton("Monitor")
@@ -371,15 +384,20 @@ class RunCard(QtWidgets.QFrame):
             stop_btn.clicked.connect(lambda: on_stop(entry) if on_stop else None)
             force_btn = QtWidgets.QPushButton("Force Stop")
             force_btn.setEnabled(entry.running)
+            force_btn.setProperty("role", "danger")
             force_btn.clicked.connect(lambda: on_stop(entry, True) if on_stop else None)
             for _b in (monitor_btn, resume_btn, stop_btn, force_btn):
-                _b.setStyleSheet(_SECONDARY_BTN)
                 _b.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-            btn_row.addWidget(monitor_btn)
-            btn_row.addWidget(resume_btn)
-            btn_row.addWidget(stop_btn)
-            btn_row.addWidget(force_btn)
+                btn_row.addWidget(_b)
+        btn_row.addWidget(view_btn)
+        layout.addSpacing(4)
         layout.addLayout(btn_row)
+
+    def set_selected(self, selected: bool) -> None:
+        if bool(self.property("selected")) == bool(selected):
+            return
+        self.setProperty("selected", bool(selected))
+        _repolish(self)
 
 
 class NewRunDialog(QtWidgets.QDialog):
@@ -387,26 +405,30 @@ class NewRunDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.genome_paths: List[Path] = []
 
+        self.setObjectName("NewRunDialog")
         self.setWindowTitle("Start New Run")
         self.resize(720, 520)
         self._build_ui()
 
     def _build_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 14)
+        layout.setSpacing(10)
 
         intro = QtWidgets.QLabel(
             "Select genomes to run the full required pipeline."
         )
         intro.setWordWrap(True)
+        intro.setProperty("role", "muted")
         layout.addWidget(intro)
 
-        genomes_group = QtWidgets.QGroupBox("Genomes")
+        genomes_group = QtWidgets.QGroupBox("Assemblies")
         genomes_layout = QtWidgets.QVBoxLayout(genomes_group)
         self.genome_list = QtWidgets.QListWidget()
         genomes_layout.addWidget(self.genome_list)
 
         btn_row = QtWidgets.QHBoxLayout()
-        add_btn = QtWidgets.QPushButton("Add Genomes…")
+        add_btn = QtWidgets.QPushButton("Add Assemblies…")
         add_btn.clicked.connect(self._add_genomes)
         remove_btn = QtWidgets.QPushButton("Remove Selected")
         remove_btn.clicked.connect(self._remove_selected_genomes)
@@ -423,6 +445,7 @@ class NewRunDialog(QtWidgets.QDialog):
             QtWidgets.QDialogButtonBox.StandardButton.Ok
             | QtWidgets.QDialogButtonBox.StandardButton.Cancel
         )
+        btns.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setProperty("role", "primary")
         btns.accepted.connect(self._validate_and_accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
@@ -430,17 +453,58 @@ class NewRunDialog(QtWidgets.QDialog):
     def _add_genomes(self) -> None:
         paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
             self,
-            "Select genome FASTA files",
+            "Select assembly FASTA files",
             "",
             "FASTA files (*.fa *.fasta *.fna *.fa.gz *.fasta.gz *.fna.gz);;All files (*)",
         )
         if not paths:
             return
-        for p in paths:
-            path = Path(p)
-            if path not in self.genome_paths:
-                self.genome_paths.append(path)
-                self.genome_list.addItem(str(path))
+        self._add_genome_paths([Path(p) for p in paths])
+
+    def _add_genome_paths(self, paths: List[Path]) -> List[Path]:
+        """Add genome files, refusing any whose sample name is already taken.
+
+        Names come from the resolved file (symlinks followed), as the pipeline names
+        samples, so the picker and DataInput agree. Returns the rejected paths; a
+        warning lists each one with the file that already holds its name.
+        """
+        from pipeline.DataInput import genome_name_keys
+
+        known: set[str] = set()
+        taken: dict[str, Path] = {}
+        for existing in self.genome_paths:
+            ident, keys = genome_name_keys(existing)
+            known.add(ident)
+            for key in keys:
+                taken.setdefault(key, existing)
+
+        rejected: List[tuple[Path, Optional[Path]]] = []
+        for path in paths:
+            ident, keys = genome_name_keys(path)
+            if path in self.genome_paths or ident in known:
+                continue
+            clash = next((taken[k] for k in sorted(keys) if k in taken), None)
+            if clash is not None:
+                rejected.append((path, clash))
+                continue
+            known.add(ident)
+            for key in keys:
+                taken.setdefault(key, path)
+            self.genome_paths.append(path)
+            self.genome_list.addItem(str(path))
+        if rejected:
+            lines = [
+                f"{path}\n    same sample name as {other}" if other else str(path)
+                for path, other in rejected
+            ]
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Duplicate genome names",
+                "Each genome needs a unique sample name (the file name without .gz and "
+                "the FASTA suffix; for a link, the name of the file it points to). "
+                "These files were not added:\n\n" + "\n".join(lines),
+            )
+        return [path for path, _ in rejected]
 
     def _remove_selected_genomes(self) -> None:
         selected = self.genome_list.selectedItems()
@@ -459,6 +523,12 @@ class NewRunDialog(QtWidgets.QDialog):
         if not self.genome_paths:
             QtWidgets.QMessageBox.critical(self, "Validation error", "Please select at least one genome.")
             return
+        from pipeline.DataInput import find_genome_name_collisions, format_genome_name_collisions
+
+        collisions = find_genome_name_collisions(self.genome_paths)
+        if collisions:
+            QtWidgets.QMessageBox.critical(self, "Validation error", format_genome_name_collisions(collisions))
+            return
         self.accept()
 
 
@@ -474,11 +544,13 @@ class StartupDialog(QtWidgets.QDialog):
         self._progress_dialog: Optional[RunProgressDialog] = None
         self._active_run_dir: Optional[Path] = None
         self._active_run_id: Optional[str] = None
+        # A partial run's explanation checks its expected files: once per run state.
+        self._pending_cache: dict[str, tuple[tuple[str, str], Optional[str]]] = {}
 
         self.setWindowTitle("Select Run")
-        self.resize(640, 520)
+        self.resize(720, 600)
+        self.setMinimumWidth(600)  # a card's five buttons in one row
         self.setObjectName("StartupDialog")
-        self.setStyleSheet("QDialog#StartupDialog { background: #eef3f8; }")
         self._build_ui()
         self._load_runs()
 
@@ -489,81 +561,83 @@ class StartupDialog(QtWidgets.QDialog):
 
     def _build_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(22, 20, 22, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(22, 20, 22, 14)
+        layout.setSpacing(4)
 
         title = QtWidgets.QLabel("Select a run")
-        title.setStyleSheet("font-size: 18px; font-weight: 800; color: #172433;")
+        title.setProperty("role", "windowTitle")
         layout.addWidget(title)
         intro = QtWidgets.QLabel("Open a completed run in the annotation explorer, or start a new one.")
         intro.setWordWrap(True)
-        intro.setStyleSheet("color: #64748b; font-size: 12px;")
+        intro.setProperty("role", "windowHint")
         layout.addWidget(intro)
+        layout.addSpacing(10)
 
-        list_row = QtWidgets.QHBoxLayout()
-        list_row.addStretch(1)
         self.run_list = QtWidgets.QListWidget()
         self.run_list.setObjectName("RunList")
         self.run_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
-        self.run_list.setSpacing(8)
-        self.run_list.setFixedSize(520, 360)
-        self.run_list.setStyleSheet(
-            """
-            QListWidget#RunList {
-                background: transparent;
-                border: none;
-                padding: 4px;
-            }
-            QListWidget#RunList::item:selected {
-                background: transparent;
-            }
-            QListWidget#RunList QScrollBar:vertical {
-                background: transparent;
-                width: 9px;
-                margin: 2px 0;
-            }
-            QListWidget#RunList QScrollBar::handle:vertical {
-                background: rgba(31,45,61,0.24);
-                border-radius: 4px;
-                min-height: 28px;
-            }
-            QListWidget#RunList QScrollBar::handle:vertical:hover {
-                background: rgba(31,45,61,0.40);
-            }
-            QListWidget#RunList QScrollBar::add-line:vertical,
-            QListWidget#RunList QScrollBar::sub-line:vertical {
-                height: 0;
-            }
-            QListWidget#RunList QScrollBar::add-page:vertical,
-            QListWidget#RunList QScrollBar::sub-page:vertical {
-                background: transparent;
-            }
-            """
-        )
+        self.run_list.setSpacing(0)  # cards line up with the header and footer; _CARD_GAP below each
+        self.run_list.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.run_list.verticalScrollBar().setSingleStep(16)
+        self.run_list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.run_list.viewport().installEventFilter(self)
         self.run_list.currentItemChanged.connect(self._on_run_selected)
-        list_row.addWidget(self.run_list, stretch=0)
-        list_row.addStretch(1)
-        layout.addLayout(list_row)
+        layout.addWidget(self.run_list, 1)
 
-        btn_row = QtWidgets.QHBoxLayout()
+        footer = QtWidgets.QFrame()
+        footer.setObjectName("StartFooter")
+        btn_row = QtWidgets.QHBoxLayout(footer)
+        btn_row.setContentsMargins(0, 12, 0, 0)
+        btn_row.setSpacing(8)
         settings_btn = QtWidgets.QPushButton("⚙")
         settings_btn.setToolTip("Settings")
-        settings_btn.setStyleSheet(_SECONDARY_BTN)
         settings_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         settings_btn.clicked.connect(self._open_settings_dialog)
         btn_row.addWidget(settings_btn)
         new_run_btn = QtWidgets.QPushButton("Start New Run")
-        new_run_btn.setStyleSheet(_SECONDARY_BTN)
         new_run_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         new_run_btn.clicked.connect(self._open_new_run_dialog)
         btn_row.addWidget(new_run_btn)
         btn_row.addStretch(1)
         cancel_btn = QtWidgets.QPushButton("Cancel")
-        cancel_btn.setStyleSheet(_GHOST_BTN)
+        cancel_btn.setProperty("role", "flat")
         cancel_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(cancel_btn)
-        layout.addLayout(btn_row)
+        layout.addWidget(footer)
+
+    def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:  # type: ignore[override]
+        if watched is self.run_list.viewport() and event.type() == QtCore.QEvent.Type.Resize:
+            self._fit_cards()
+        return super().eventFilter(watched, event)
+
+    def _fit_cards(self) -> None:
+        """Cards span the list's width; their height follows their wrapped text."""
+        width = max(240, self.run_list.viewport().width())
+        for i in range(self.run_list.count()):
+            item = self.run_list.item(i)
+            card = self._card(item)
+            if card is None:
+                continue
+            card.setFixedWidth(width)
+            height = card.heightForWidth(width) if card.hasHeightForWidth() else -1
+            if height <= 0:
+                height = card.sizeHint().height()
+            item.setSizeHint(QtCore.QSize(width, height + _CARD_GAP))
+
+    def _card(self, item: Optional[QtWidgets.QListWidgetItem]) -> Optional["RunCard"]:
+        holder = self.run_list.itemWidget(item) if item is not None else None
+        return holder.findChild(RunCard) if holder is not None else None
+
+    def _pending_text(self, output_dir: Path, status_info: dict[str, object]) -> Optional[str]:
+        status = str(status_info.get("status") or "unknown")
+        key = (status, str(status_info.get("updated_at") or ""))
+        cached = self._pending_cache.get(str(output_dir))
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        text = pending_text_for(status, output_dir)
+        self._pending_cache[str(output_dir)] = (key, text)
+        return text
 
     def _load_runs(self) -> None:
         prev_run_id = self.run_id
@@ -594,10 +668,6 @@ class StartupDialog(QtWidgets.QDialog):
                 continue
             seen_dirs.add(str(output_dir))
 
-            expected_files = resolve_expected_files(output_dir)
-            expected_total = len(expected_files)
-            expected_found = sum(1 for fp in expected_files if expected_output_exists(output_dir, fp))
-
             sample_count = None
             if isinstance(run_cfg, dict):
                 genomes = run_cfg.get("inputs", {}).get("genomes") if isinstance(run_cfg.get("inputs"), dict) else None
@@ -605,8 +675,11 @@ class StartupDialog(QtWidgets.QDialog):
                     sample_count = len(genomes)
 
             status_info = load_run_status(output_dir)
+            status = str(status_info.get("status") or "unknown")
             running = bool(status_info.get("active"))
-            pending_text = summarize_pending_outputs(output_dir, expected_files) if expected_files else None
+            state = status_info.get("state")
+            steps = summarize_run_steps(state if isinstance(state, dict) else None, status)
+            pending_text = self._pending_text(output_dir, status_info)
             can_view = run_allows_view(status_info)
             can_resume = run_allows_resume(status_info)
             status_detail = describe_run_status(status_info, pending_text)
@@ -631,10 +704,9 @@ class StartupDialog(QtWidgets.QDialog):
                 sample_count=sample_count,
                 path=output_dir,
                 run_config=run_cfg if isinstance(run_cfg, dict) else None,
-                expected_total=expected_total,
-                expected_found=expected_found,
+                steps=steps,
                 running=running,
-                status=str(status_info.get("status") or "unknown"),
+                status=status,
                 status_text=status_text,
                 can_view=can_view,
                 can_resume=can_resume,
@@ -661,11 +733,15 @@ class StartupDialog(QtWidgets.QDialog):
                 self.run_list,
             )
             card.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
-            card_width = max(240, self.run_list.viewport().width() - 8)
-            card.setFixedWidth(card_width)
-            item.setSizeHint(card.sizeHint())
+            # The card sits in a transparent holder whose bottom margin is the gap.
+            holder = QtWidgets.QWidget()
+            holder_layout = QtWidgets.QVBoxLayout(holder)
+            holder_layout.setContentsMargins(0, 0, 0, _CARD_GAP)
+            holder_layout.setSpacing(0)
+            holder_layout.addWidget(card, 0, QtCore.Qt.AlignmentFlag.AlignTop)
             self.run_list.addItem(item)
-            self.run_list.setItemWidget(item, card)
+            self.run_list.setItemWidget(item, holder)
+        self._fit_cards()
 
         if self.run_list.count() > 0:
             if prev_path:
@@ -694,6 +770,10 @@ class StartupDialog(QtWidgets.QDialog):
         current: Optional[QtWidgets.QListWidgetItem],
         _previous: Optional[QtWidgets.QListWidgetItem],
     ) -> None:
+        for item, selected in ((_previous, False), (current, True)):
+            card = self._card(item)
+            if card is not None:
+                card.set_selected(selected)
         entry = current.data(QtCore.Qt.ItemDataRole.UserRole) if current else None
         if not isinstance(entry, RunEntry):
             self.output_dir = None
@@ -796,7 +876,10 @@ class StartupDialog(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Stop run", f"Failed to request stop: {exc}")
             return
-        QtWidgets.QMessageBox.information(self, "Stop run", "Stop requested. The run will stop after the current step.")
+        QtWidgets.QMessageBox.information(
+            self, "Stop run",
+            "Stop requested. The run will stop after the current step, or during a cgMLST scheme install.",
+        )
 
     def _data_input_from_run_config(self, run_cfg: dict, output_dir: Path) -> Optional["DataInput"]:
         from pipeline.ChewBBACAWorkflow import validate_chewbbaca_settings
@@ -820,15 +903,21 @@ class StartupDialog(QtWidgets.QDialog):
         # loadable after the project or DB directory was moved/renamed (the stored
         # absolute path is the fallback). Genomes are user inputs outside the DB and
         # are left exactly as recorded.
+        # A recorded database removed since is left out (the run records it as not installed).
         db_dirs = configured_database_dirs()
         marker_sequences = [
-            relocate_db_path(p, db_dirs.get("marker_sequences_dir"))
-            for p in (inputs.get("marker_sequences") or [])
+            path for path in (
+                Path(relocate_db_path(p, db_dirs.get("marker_sequences_dir")))
+                for p in (inputs.get("marker_sequences") or [])
+            ) if path.is_file()
         ]
         reference_locus_sequences = [
-            relocate_db_path(p, db_dirs.get("compound_sequences_dir"))
-            for p in (inputs.get("reference_locus_sequences") or [])
+            path for path in (
+                Path(relocate_db_path(p, db_dirs.get("compound_sequences_dir")))
+                for p in (inputs.get("reference_locus_sequences") or [])
+            ) if path.is_file()
         ]
+        kept = {p.stem for p in (*marker_sequences, *reference_locus_sequences)}
         bakta_db = inputs.get("bakta_db")
         if bakta_db and not Path(str(bakta_db)).expanduser().exists():
             bakta_db = configured_bakta_db_path() or bakta_db
@@ -844,8 +933,8 @@ class StartupDialog(QtWidgets.QDialog):
         try:
             cfg = DataInput(
                 genomes=[Path(p) for p in inputs.get("genomes") or []],
-                marker_sequences=[Path(p) for p in marker_sequences],
-                reference_locus_sequences=[Path(p) for p in reference_locus_sequences],
+                marker_sequences=marker_sequences,
+                reference_locus_sequences=reference_locus_sequences,
                 output=output_dir,
                 snippy_reference=inputs.get("snippy_reference"),
                 bakta_db=bakta_db,
@@ -855,8 +944,10 @@ class StartupDialog(QtWidgets.QDialog):
                 diamond=inputs.get("diamond", True),
                 bakta=inputs.get("bakta", True),
                 total_cores=int(inputs.get("cores", 1)),
-                marker_categories=inputs.get("marker_categories") or {},
-                reference_locus_categories=inputs.get("reference_locus_categories") or {},
+                marker_categories={k: v for k, v in (inputs.get("marker_categories") or {}).items() if k in kept},
+                reference_locus_categories={
+                    k: v for k, v in (inputs.get("reference_locus_categories") or {}).items() if k in kept
+                },
                 fastgear_config=inputs.get("fastgear") or configured_fastgear_settings(),
                 mobsuite_config=configured_mobsuite_settings(inputs.get("mobsuite")),
                 chewbbaca_config=configured_chewbbaca_settings(inputs.get("chewbbaca")),
@@ -909,6 +1000,8 @@ class StartupDialog(QtWidgets.QDialog):
         cfg = self._data_input_from_run_config(run_cfg, entry.path)
         if cfg is None:
             return
+
+        ask_cgmlst_terms_before_run(self, entry.path, cfg.chewbbaca_config)
 
         self._active_run_dir = entry.path
         self._active_run_id = entry.run_id
@@ -1049,49 +1142,33 @@ class StartupDialog(QtWidgets.QDialog):
         from pipeline.DataInput import DataInput
         from pipeline.DbCatalog import COMPOUND_DB_CATALOG_PATH, MARKER_DB_CATALOG_PATH
         from pipeline.ToolEnv import (
+            DEV_BAKTA_DB_PATH,
             configured_assembly_qc_settings,
-            configured_bakta_db_path,
             configured_chewbbaca_settings,
             configured_fastgear_settings,
             configured_mobsuite_settings,
             effective_core_budget,
         )
 
-        marker_entries = _load_catalog_entries(MARKER_DB_CATALOG_PATH)
-        locus_entries = _load_catalog_entries(COMPOUND_DB_CATALOG_PATH)
+        # Only the installed databases are searched; the run logs and records the
+        # others as not installed (none skips that search).
+        # An unreadable catalog stops the start (as the CLI does).
+        marker_catalog = _load_catalog_entries(MARKER_DB_CATALOG_PATH)
+        if marker_catalog is None:
+            return
+        locus_catalog = _load_catalog_entries(COMPOUND_DB_CATALOG_PATH)
+        if locus_catalog is None:
+            return
+        marker_entries = [(p, cat) for p, cat in marker_catalog if p.is_file()]
+        locus_entries = [(p, cat) for p, cat in locus_catalog if p.is_file()]
         markers = [p for p, _ in marker_entries]
         loci = [p for p, _ in locus_entries]
-
-        if not markers:
-            QtWidgets.QMessageBox.warning(self, "Missing", "No marker sequences found in the catalog.")
-            return
-        if not loci:
-            QtWidgets.QMessageBox.warning(self, "Missing", "No reference locus sequences found in the catalog.")
-            return
-
-        missing_markers = [p for p in markers if not p.exists() or not p.is_file()]
-        if missing_markers:
-            QtWidgets.QMessageBox.critical(
-                self,
-                "Missing files",
-                "Marker sequences not found:\n" + "\n".join(str(p) for p in missing_markers),
-            )
-            return
-        missing_loci = [p for p in loci if not p.exists() or not p.is_file()]
-        if missing_loci:
-            QtWidgets.QMessageBox.critical(
-                self,
-                "Missing files",
-                "Reference locus sequences not found:\n" + "\n".join(str(p) for p in missing_loci),
-            )
-            return
-
         marker_cats = {p.stem: cat for p, cat in marker_entries}
         locus_cats = {p.stem: cat for p, cat in locus_entries}
 
         bdb = (config.get("bakta_db") or "").strip()
         if self._dev_mode and not bdb:
-            bdb = configured_bakta_db_path()
+            bdb = DEV_BAKTA_DB_PATH
         if not bdb:
             QtWidgets.QMessageBox.critical(
                 self,
@@ -1147,6 +1224,8 @@ class StartupDialog(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Invalid input", str(exc))
             return
+
+        ask_cgmlst_terms_before_run(self, None, cfg.chewbbaca_config)
 
         self._active_run_dir = output_dir
         self._active_run_id = run_id

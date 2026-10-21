@@ -408,7 +408,7 @@ def kmeans(X: np.ndarray, k: int, *, n_init: int = 5, max_iter: int = 100, rng: 
     return best_labels, best_centers, float(best_inertia)
 
 def calinski_harabasz(X: np.ndarray, labels: np.ndarray, centers: np.ndarray) -> float:
-    """Compute Calinski–Harabasz index."""
+    """Compute Calinski-Harabasz index."""
     n, p = X.shape
     k = centers.shape[0]
     if k <= 1 or k >= n:

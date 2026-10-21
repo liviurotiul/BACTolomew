@@ -1,0 +1,1 @@
+MapLibre GL JS 4.7.1 (from npm maplibre-gl-4.7.1.tgz, sha512 verified). BSD-3-Clause, see LICENSE.txt.
