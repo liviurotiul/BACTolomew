@@ -4,12 +4,18 @@ On a workstation that is the machine; on a cluster node or in a container it is 
 the CPU affinity mask (taskset, SLURM's task binding), the cgroup's CPU quota and memory
 limit (cgroup v2 `cpu.max` / `memory.max`, v1 `cpu.cfs_quota_us` / `memory.limit_in_bytes`)
 and the SLURM allocation (`SLURM_CPUS_PER_TASK`, `SLURM_MEM_PER_NODE`, `SLURM_MEM_PER_CPU`).
+On macOS and Windows the tools run in Docker Desktop's (or Podman's) Linux VM, which has
+only part of the machine: its CPUs and memory cap the budget too.
 Each limit found caps the budget; the smallest one wins and is named in `describe()`.
 """
 from __future__ import annotations
 
 import math
 import os
+import shutil
+import subprocess
+import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional
@@ -132,6 +138,41 @@ def _physical_memory() -> Optional[int]:
         return None
 
 
+_VM_PROBES = (
+    ("docker", ["info", "--format", "{{.NCPU}} {{.MemTotal}}"]),
+    ("podman", ["info", "--format", "{{.Host.CPUs}} {{.Host.MemTotal}}"]),
+)
+_VM_LIMITS: Optional[tuple[int, int]] = None
+_VM_PROBED_AT: Optional[float] = None
+_VM_RETRY_SECONDS = 60.0
+
+
+def container_vm_limits() -> Optional[tuple[int, int]]:
+    """(CPUs, memory bytes) of the Linux VM that runs the containers on macOS and Windows
+    (Docker Desktop, a Podman machine), or None on Linux or when no engine answers. A
+    successful probe is kept for the process; a failed one is retried after a minute
+    (Docker Desktop may start later)."""
+    global _VM_LIMITS, _VM_PROBED_AT
+    if _VM_LIMITS is not None or not sys.platform.startswith(("darwin", "win")):
+        return _VM_LIMITS
+    now = time.monotonic()
+    if _VM_PROBED_AT is not None and now - _VM_PROBED_AT < _VM_RETRY_SECONDS:
+        return None
+    _VM_PROBED_AT = now
+    for exe, args in _VM_PROBES:
+        if not shutil.which(exe):
+            continue
+        try:
+            res = subprocess.run([exe, *args], capture_output=True, text=True, timeout=10)
+            cpus, mem = (int(x) for x in res.stdout.split()[:2])
+        except (OSError, subprocess.SubprocessError, ValueError):
+            continue
+        if res.returncode == 0 and cpus > 0 and mem > 0:
+            _VM_LIMITS = (cpus, mem)
+            break
+    return _VM_LIMITS
+
+
 def _env_int(env: Mapping[str, str], name: str) -> Optional[int]:
     raw = str(env.get(name) or "").strip().upper()
     # SLURM_MEM_* are in MB and may carry a unit suffix (e.g. "4G").
@@ -151,8 +192,10 @@ def detect_budget(
     *,
     cgroup_root: Path = _CGROUP_ROOT,
     proc_cgroup: Optional[str] = None,
+    vm_limits: Optional[tuple[int, int]] = None,
 ) -> ResourceBudget:
     env = os.environ if env is None else env
+    vm = vm_limits or container_vm_limits()
     cores: dict[str, int] = {"machine": os.cpu_count() or 1}
     affinity = _affinity_cpus()
     if affinity:
@@ -163,6 +206,8 @@ def detect_budget(
     slurm_cpus = _env_int(env, "SLURM_CPUS_PER_TASK")
     if slurm_cpus:
         cores["SLURM_CPUS_PER_TASK"] = slurm_cpus
+    if vm:
+        cores["container VM"] = vm[0]
 
     gb = float(1 << 30)
     memory: dict[str, float] = {}
@@ -172,6 +217,8 @@ def detect_budget(
     cg_mem = cgroup_memory_limit(cgroup_root, proc_cgroup)
     if cg_mem:
         memory["cgroup memory limit"] = cg_mem / gb
+    if vm:
+        memory["container VM"] = vm[1] / gb
     per_node = _env_int(env, "SLURM_MEM_PER_NODE")
     if per_node:
         memory["SLURM_MEM_PER_NODE"] = per_node / 1024
@@ -185,4 +232,4 @@ def detect_budget(
     return ResourceBudget(core_budget, mem_budget, cores, memory)
 
 
-__all__ = ["ResourceBudget", "detect_budget", "cgroup_cpu_limit", "cgroup_memory_limit"]
+__all__ = ["ResourceBudget", "detect_budget", "cgroup_cpu_limit", "cgroup_memory_limit", "container_vm_limits"]

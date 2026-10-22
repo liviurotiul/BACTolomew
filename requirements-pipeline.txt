@@ -22,4 +22,6 @@ polars>=1.36,<3
 # so the numpy bound above must stay at 2 or newer.
 pyarrow>=16,<27
 scipy>=1.13,<2
-biopython>=1.84,<2
+# Biopython 1.87 and newer publish no wheel for Intel Macs (macosx x86_64).
+biopython>=1.84,<2 ; sys_platform != 'darwin' or platform_machine != 'x86_64'
+biopython>=1.84,<1.87 ; sys_platform == 'darwin' and platform_machine == 'x86_64'

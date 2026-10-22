@@ -63,7 +63,7 @@ lock() {
         --generate-hashes \
         --no-strip-markers \
         --custom-compile-command "tools/lock_deps.sh" \
-        "${UPGRADE[@]}" \
+        ${UPGRADE[@]+"${UPGRADE[@]}"} \
         --quiet \
         --output-file "$out")
 }

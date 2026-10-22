@@ -366,6 +366,18 @@ In the code, bump the default image for new installs:
 - the image in `src/scripts/demo_install.py`;
 - the README ("First launch and setup": the image is pulled, the local build is only for
   development; "Uninstall": the image name).
+- `TOOLS_IMAGE_PLATFORMS` beside `TOOLS_IMAGE`: the platforms the pinned digest is
+  published for. On any other engine platform setup does not pull it (a single-platform
+  digest downloads in full and then fails) and builds a native image instead. When a
+  multi-platform image (with linux/arm64) is published, list both platforms and pin the
+  index digest;
+- `install_windows.ps1`: the default of `-Ref` (the tag whose `install.sh` and locks it
+  fetches) to the new release tag, once that tag is pushed.
+
+The install docs (`docs/INSTALL.md`, `install_windows.ps1`, the macOS branch of
+`install.sh`) only work for users once they are committed and pushed: the Windows command
+downloads `install_windows.ps1` from `main`, and a tag older than these files has no macOS
+support in `install.sh`.
 
 ## Changing a tool version later
 

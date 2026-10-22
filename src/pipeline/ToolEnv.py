@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -251,6 +252,9 @@ def get_tool_env_prefix(tool_name: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 TOOLS_IMAGE = "liviurotiul/bactolomew:0.3.0@sha256:7ed7408c88aac76f6c00b2417862e24f1dd3d91fe9ea89c5d62d57df7770ffde"
+# The platforms TOOLS_IMAGE is published for (a single-platform digest). On another engine
+# platform (Apple Silicon: linux/arm64) setup builds a native image instead of pulling it.
+TOOLS_IMAGE_PLATFORMS = ("linux/amd64",)
 DEFAULT_RUNTIME = "native"  # backward-compatible default when config has no `runtime`
 CONTAINER_RUNTIMES = ("docker", "podman", "singularity")  # config `runtime` values besides native
 OCI_RUNTIMES = ("docker", "podman")  # engines that run `<exe> run ... <image> <argv>`
@@ -302,30 +306,33 @@ def current_container_context() -> Optional[ContainerContext]:
     return _CURRENT_CTX.get() or _ACTIVE_CTX
 
 
-def _is_within(path: Any, root: Any) -> bool:
-    try:
-        Path(str(path)).resolve().relative_to(Path(str(root)).resolve())
-        return True
-    except Exception:
-        return False
+def compute_bind_roots(paths: Iterable[Any], *, keep_links: Optional[bool] = None) -> List[str]:
+    """Minimal set of top-level host dirs to identity-bind so every path resolves.
 
-
-def compute_bind_roots(paths: Iterable[Any]) -> List[str]:
-    """Minimal set of top-level host dirs to identity-bind so every path resolves."""
+    With `keep_links` (default: on macOS) a folder reached through a symlink is bound both
+    resolved and as written, so a tool given either path finds it: macOS's /tmp and /var
+    are links into /private, and tempfile's folders (TMPDIR, /var/folders/...) are
+    written unresolved."""
+    if keep_links is None:
+        keep_links = sys.platform == "darwin"
     dirs: list[Path] = []
     for p in paths:
         if not p:
             continue
-        pp = Path(str(p)).expanduser()
+        written = Path(os.path.abspath(Path(str(p)).expanduser()))
         try:
-            pp = pp.resolve()
+            real = written.resolve()
         except Exception:
-            pp = pp.absolute()
-        dirs.append(pp if pp.is_dir() else pp.parent)
+            real = written
+        is_dir = real.is_dir()
+        for form in ({real, written} if keep_links else {real}):
+            dirs.append(form if is_dir else form.parent)
     dirs.append(Path("/tmp"))
+    if keep_links:
+        dirs.append(Path("/tmp").resolve())
     roots: list[Path] = []
     for d in sorted(set(dirs), key=lambda x: len(str(x))):
-        if not any(d == r or _is_within(d, r) for r in roots):
+        if not any(d == r or r in d.parents for r in roots):
             roots.append(d)
     return [str(r) for r in roots]
 
@@ -1031,6 +1038,7 @@ def configured_assembly_qc_settings(raw_config: Mapping[str, Any] | None = None)
 __all__ = [
     "REQUIRED_TOOL_ENVS",
     "TOOLS_IMAGE",
+    "TOOLS_IMAGE_PLATFORMS",
     "CONTAINER_RUNTIMES",
     "OCI_RUNTIMES",
     "configured_image_ref",

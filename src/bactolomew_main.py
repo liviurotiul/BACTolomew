@@ -376,8 +376,11 @@ def cmd_check(_args: argparse.Namespace) -> int:
     root = project_root()
     print(_version_text())
     row("Python", sys.version_info >= (3, 10), f"{platform.python_version()} ({sys.executable})")
-    libc, libc_version = platform.libc_ver()
-    row("C library", None, f"{libc} {libc_version}".strip() or "unknown")
+    if sys.platform == "darwin":
+        row("System", None, f"macOS {platform.mac_ver()[0]} ({platform.machine()})")
+    else:
+        libc, libc_version = platform.libc_ver()
+        row("C library", None, f"{libc} {libc_version}".strip() or "unknown")
     qt_ok, qt_text = _qt_report()
     print(f"{'Qt (window)':<18} {'ok' if qt_ok else 'no':<8} {qt_text}")
     problem = display_problem()

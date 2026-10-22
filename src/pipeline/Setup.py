@@ -1036,6 +1036,13 @@ class SetupJob:
                 runtime, image, registry, sif, build = self._container_settings()
                 target = sif if runtime == "singularity" else image
                 how = "pull" + (" (or build when the pull fails)" if build else "")
+                if runtime != "singularity":
+                    from pipeline import ContainerRuntime as CR
+                    plat = CR.unpublished_platform(image, CR.engine_exe(runtime))
+                    if plat:
+                        how = (f"build ({plat}: the published image is not for it)" if build
+                               else f"fail (no {plat} image is published, build_on_missing is false)")
+                        target = CR.split_image_digest(image)[0]
                 lines.append(f"  {how} {target} with {runtime}" + (f" from {registry}" if registry else ""))
             elif step.key in ("bakta", "checkm2"):
                 quiet = lambda _line: None  # noqa: E731 - the commands are listed below
@@ -1066,7 +1073,14 @@ class SetupJob:
             return sif if CR.sif_present(sif) else None
         if not CR.runtime_status(runtime).ok:
             return None
-        return image if CR.docker_image_present(image, CR.engine_exe(runtime)) else None
+        engine = CR.engine_exe(runtime)
+        if CR.docker_image_present(image, engine):
+            return image
+        # Apple Silicon: the native local build stands in for the amd64-only pinned digest.
+        name = CR.split_image_digest(image)[0]
+        if CR.unpublished_platform(image, engine) and CR.docker_image_present(name, engine):
+            return name
+        return None
 
     def _run_image(self, log: LogFn) -> str:
         from pipeline import ContainerRuntime as CR

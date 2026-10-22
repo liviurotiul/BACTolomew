@@ -78,6 +78,25 @@ class ResourceBudgetTest(unittest.TestCase):
         self.assertAlmostEqual(budget.memory_limits["SLURM_MEM_PER_CPU"], 6.0)
         self.assertIn("SLURM_CPUS_PER_TASK", budget.describe())
 
+    def test_docker_desktop_vm_caps_the_budget_on_macos(self):
+        from unittest import mock
+
+        from pipeline import Resources as R
+
+        answer = subprocess.CompletedProcess([], 0, stdout=f"4 {8 << 30}\n", stderr="")
+        with mock.patch.object(R.sys, "platform", "darwin"), \
+                mock.patch.object(R, "_VM_LIMITS", None), mock.patch.object(R, "_VM_PROBED_AT", None), \
+                mock.patch.object(R.shutil, "which", return_value="/usr/local/bin/docker"), \
+                mock.patch.object(R.subprocess, "run", return_value=answer) as run:
+            budget = detect_budget({}, cgroup_root=self._tree({}), proc_cgroup="")
+        self.assertEqual(run.call_args[0][0][:2], ["docker", "info"])
+        self.assertLessEqual(budget.cores, 4)
+        self.assertAlmostEqual(budget.memory_limits["container VM"], 8.0)
+        with mock.patch.object(R.sys, "platform", "linux"), mock.patch.object(R, "_VM_LIMITS", None), \
+                mock.patch.object(R.subprocess, "run") as run:
+            self.assertIsNone(R.container_vm_limits())
+        run.assert_not_called()
+
 
 class SetupPlanTest(unittest.TestCase):
     def test_setup_plans_a_sif_and_names_a_runtime_that_cannot_work(self):

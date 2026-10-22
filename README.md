@@ -66,96 +66,123 @@ The conda environments are defined in [`yamls/`](yamls/), pinned exactly in
 | Database searches  | DIAMOND 2.2.3 |
 | Sequence alignment | MAFFT 7.526 (explorer) |
 
-## Requirements
-
-- **OS**: x86_64 Linux with glibc 2.34 or newer for the window (PyQt6 wheels), for example
-  Ubuntu 22.04, Debian 12, Fedora, Rocky 9, openSUSE Leap 15.6. A headless install
-  (pipeline only) needs glibc 2.28 or newer (Rocky/RHEL 8). musl systems such as Alpine are
-  not supported.
-- **Python 3.10 to 3.14** on the host (with `venv`; `install.sh` says what to install when
-  it is missing).
-- **Container runtime** for the analysis tools: Docker (tested), Podman (rootful or
-  rootless) or Apptainer/Singularity. Not needed to view results.
-- **Disk**: about 125 GB free for first-time setup (the full Bakta database downloaded and
-  unpacked side by side, CheckM2, a margin); about 80 GB of databases stay afterwards, plus
-  the tools image (about 22 GB) in the container storage and your runs.
-- **RAM**: 32 GB recommended (below 32 GB CheckM2 runs with `--lowmem`).
-- **CPU**: the locked polars build needs AVX2/FMA/BMI2 (Intel Haswell, AMD Zen or newer);
-  `./bactolomew check` says so on an older CPU, where `.venv/bin/pip install 'polars[rtcompat]'`
-  in the install folder adds the compatible build.
-
-Host Python dependencies: [`requirements.txt`](requirements.txt) (PyQt6, PyQt6-WebEngine,
-PyQt6Ads, Matplotlib, PyQtGraph, plus the pipeline part) and
-[`requirements-pipeline.txt`](requirements-pipeline.txt) (the Qt-free part a headless install
-needs: NumPy 2, pandas, Polars, PyArrow, SciPy, Biopython). Both give version ranges; the
-tested pins, with sha256 hashes and one file for every supported Python, are
-`requirements.lock` and `requirements-pipeline.lock`, regenerated with `tools/lock_deps.sh`.
-`tools/check_latest_deps.sh` tries the newest releases in a throwaway venv and reports what
-moved and whether anything broke.
-
 ## Installation
 
-Clone and install (the tested path):
+On every system the installer checks what is missing and prints the exact command to fix it.
+Add `--viewer` (`-Viewer` on Windows) to install only the viewer, for looking at runs others
+shared with you: no Docker, no databases, about 1 GB.
+
+**Requirements** for a full install: about 150 GB free for the first setup (about 100 GB stay),
+32 GB of RAM recommended, and Docker, Podman or Apptainer. Linux needs glibc 2.34 or newer for
+the window (2.28 or newer headless); macOS needs version 13 or newer.
+
+### Ubuntu and Debian
+
+Ubuntu 22.04 or newer, Debian 12 or newer.
 
 ```bash
-git clone https://github.com/liviurotiul/BACTolomew.git
-cd BACTolomew
+sudo apt install git python3 python3-venv docker.io
+sudo usermod -aG docker $USER          # then log out and back in
+git clone https://github.com/liviurotiul/BACTolomew.git && cd BACTolomew
 bash install.sh
 ```
 
-Or bootstrap without cloning first (download, then run, so a failed download stops there); the
-installer clones the repo into `~/BACTolomew`:
+### Fedora
 
 ```bash
-curl -fsSL -o install.sh https://raw.githubusercontent.com/liviurotiul/BACTolomew/main/install.sh && bash install.sh
+sudo dnf install git python3 moby-engine
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER          # then log out and back in
+git clone https://github.com/liviurotiul/BACTolomew.git && cd BACTolomew
+bash install.sh
 ```
 
-`install.sh` checks the system, obtains the code (in place if run from a checkout, otherwise
-`git clone`), creates a thin virtual environment (`.venv`), installs the host dependencies from
-`requirements.lock` and writes the `./bactolomew` wrapper. It installs no bioinformatics tools.
-It picks the first of `python3.13`, `python3.12`, `python3.11`, `python3.10`, `python3.14`,
-`python3` that can make a venv (or uses `uv venv --python 3.12` when `uv` is on PATH and none
-fits) and prints the package command for your distro when Python, `python3-venv` or a Qt system
-library is missing. A missing or unusable container runtime is only a warning (the window can
-still open results); Docker's "permission denied" (docker group, then log in again) and "daemon
-not running" are told apart.
+Podman, which Fedora usually has, works instead of Docker.
 
-Flags:
-
-- `--dir <install-dir>`, `--ref <branch|tag>`;
-- `--source <repo-dir|tarball>`: a checkout's tracked and untracked, not ignored files (so
-  uncommitted work installs too), or a `.tar.gz`/`.tgz`/`.tar`;
-- `--python <path>` (or `PYTHON=`);
-- `--headless`: pipeline only, no Qt (`requirements-pipeline.lock`); `./bactolomew` then
-  offers `setup`, `run` and `check`. The only option on glibc 2.28 to 2.33;
-- `--viewer`: the window only, to look at runs someone else made (no container runtime, tools
-  image or databases; about 1 GB for the venv plus about 0.5 GB per shared run of 150 genomes).
-  It writes `{"mode": "viewer"}` to a new `bactolomew_config.json`; `./bactolomew setup` later
-  adds the pipeline;
-- `--no-lock`: the newest versions within `requirements*.txt` instead of the tested lock.
-
-Tested on Ubuntu 22.04 and 24.04, Debian 12, Fedora 42, Rocky 9, openSUSE Leap 15.6, and
-Rocky 8 with `--headless`.
-
-To set up the host venv by hand:
+### Rocky, Alma and RHEL 9
 
 ```bash
-python3 -m venv .venv      # Python 3.10 to 3.14
-.venv/bin/pip install --require-hashes --only-binary :all: -r requirements.lock
+sudo dnf install git python3.12 podman
+git clone https://github.com/liviurotiul/BACTolomew.git && cd BACTolomew
+bash install.sh
 ```
 
-### Uninstall
+Docker from [Docker's repository](https://docs.docker.com/engine/install/centos/) works too.
+Version 8 runs headless only (`bash install.sh --headless`).
 
-Everything BACTolomew installs is in the install folder (the venv, `bakta_db/`, `checkm2_db/`,
-`DB/`, `runs/`, `cache/`, `bactolomew_config.json` and a `.sif` with Apptainer/Singularity),
-plus the container images and a few per-user files:
+### openSUSE Leap and Tumbleweed
 
 ```bash
-rm -rf ~/BACTolomew                                   # or your --dir / checkout (deletes your runs too)
-docker image rm liviurotiul/bactolomew:0.3.0              # the tag in bactolomew_config.json; podman alike
-docker image rm pgcbioinfo/fastgear                   # only if setup built the tools image locally
-rm -rf ~/.config/BACTolomew ~/.cache/bactolomew ~/.cache/bactolomew_tiles
+sudo zypper install git python312 docker dejavu-fonts
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER          # then log out and back in
+git clone https://github.com/liviurotiul/BACTolomew.git && cd BACTolomew
+bash install.sh
 ```
+
+### Arch
+
+```bash
+sudo pacman -S --needed git python docker ttf-dejavu
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER          # then log out and back in
+git clone https://github.com/liviurotiul/BACTolomew.git && cd BACTolomew
+bash install.sh
+```
+
+### macOS (Intel)
+
+1. Install Python 3.12 with [Homebrew](https://brew.sh) (`brew install python@3.12`) or from
+   [python.org](https://www.python.org/downloads/macos/).
+2. Install [Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/), start
+   it, and in Settings > Resources give it at least 16 GB of memory and 150 GB of disk.
+3. In Terminal:
+
+   ```bash
+   git clone https://github.com/liviurotiul/BACTolomew.git && cd BACTolomew
+   bash install.sh
+   ```
+
+Keep your runs on a case-sensitive APFS volume (Disk Utility > Add Volume > "APFS
+(Case-sensitive)").
+
+### macOS (Apple Silicon, M1 to M4)
+
+The same steps as for Intel, with Docker Desktop for Apple silicon. The published tools image is
+for Intel only, so the first `./bactolomew setup` builds it on your Mac (about an hour, at native
+speed). fastGEAR is not available on Apple Silicon; FastBAPS, the default, is.
+
+### Windows 10 and 11
+
+BACTolomew runs inside WSL2, Windows' built-in Linux; its window opens on the Windows desktop.
+In PowerShell (not as administrator):
+
+```powershell
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/liviurotiul/BACTolomew/main/install_windows.ps1 -OutFile install_windows.ps1
+powershell -ExecutionPolicy Bypass -File .\install_windows.ps1
+```
+
+The script sets up WSL2 and Ubuntu, Docker (Docker Desktop or Docker inside Linux, it asks),
+installs BACTolomew and adds it to the Start Menu. If it asks you to restart Windows, restart and
+run it again; it continues where it stopped.
+
+### HPC and servers
+
+```bash
+git clone https://github.com/liviurotiul/BACTolomew.git && cd BACTolomew
+bash install.sh --headless
+./bactolomew setup --yes --runtime apptainer      # or docker, podman
+./bactolomew run --genomes /path/to/assemblies --out /path/to/run
+```
+
+### After installing
+
+Start BACTolomew with `./bactolomew` in its folder (on Windows, from the Start Menu). The first
+start downloads the tools image and the databases.
+
+The Linux installs above are tested; macOS and Windows are not yet tested on a real machine.
+Minimal systems may need more packages (the installer names them), and the full guide with
+common problems and how to uninstall is in [docs/INSTALL.md](docs/INSTALL.md).
 
 ## First launch and setup
 

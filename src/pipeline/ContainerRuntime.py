@@ -20,6 +20,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ from typing import Any, Callable, Optional
 from pipeline.ToolEnv import (
     OCI_RUNTIMES,
     TOOLS_IMAGE,
+    TOOLS_IMAGE_PLATFORMS,
     ContainerContext,
     image_has_repository_path,
     oci_exe,
@@ -62,6 +64,12 @@ class RuntimeStatus:
 
 _PROBE_TIMEOUT = 20
 _DOCKER_INSTALL = "https://docs.docker.com/engine/install/"
+_DOCKER_DESKTOP_INSTALL = "https://docs.docker.com/desktop/"
+
+
+def _docker_desktop() -> bool:
+    """macOS and Windows run Docker as Docker Desktop (no systemctl, no docker group)."""
+    return sys.platform == "darwin" or sys.platform.startswith("win")
 _PODMAN_INSTALL = "https://podman.io/docs/installation"
 _APPTAINER_INSTALL = "https://apptainer.org/docs/admin/main/installation.html"
 
@@ -102,8 +110,11 @@ def _podman_problem(name: str, out: str) -> RuntimeStatus:
 def docker_status(exe: str = "docker") -> RuntimeStatus:
     """Docker's state from `docker info`: not installed, no permission on the socket, the
     daemon not running, or another failure, each with what to do."""
+    desktop = _docker_desktop()
     if not shutil.which(exe):
         return RuntimeStatus("docker", False, "not_installed",
+                             f"Docker is not installed. Install Docker Desktop ({_DOCKER_DESKTOP_INSTALL}), "
+                             "start it and retry." if desktop else
                              f"Docker is not installed. Install Docker Engine ({_DOCKER_INSTALL}) and retry.")
     rc, out = _probe([exe, "info"])
     if rc == 0:
@@ -113,6 +124,7 @@ def docker_status(exe: str = "docker") -> RuntimeStatus:
     low = out.lower()
     if rc is None and "did not answer" in low:
         return RuntimeStatus("docker", False, "not_running",
+                             "Docker does not answer. Restart Docker Desktop and retry." if desktop else
                              "Docker does not answer. Restart it (sudo systemctl restart docker) and retry.", out)
     if "permission denied" in low:
         return RuntimeStatus("docker", False, "permission",
@@ -121,6 +133,8 @@ def docker_status(exe: str = "docker") -> RuntimeStatus:
     if any(k in low for k in ("cannot connect", "failed to connect", "daemon running", "daemon is running",
                               "connection refused", "no such file or directory")):
         return RuntimeStatus("docker", False, "not_running",
+                             "Docker is installed but not running. Start Docker Desktop, wait until it says "
+                             "Engine running, and retry." if desktop else
                              "Docker is installed but not running. Start it (sudo systemctl start docker) "
                              "and retry.", out)
     return RuntimeStatus("docker", False, "not_usable", "Docker is not usable: " + _first_line(out), out)
@@ -315,7 +329,26 @@ def docker_image_info(image: str, engine: str = "docker") -> Optional[dict]:
         "repo_tags": list(raw.get("RepoTags") or []),
         "created": raw.get("Created") or "",
         "labels": dict(config.get("Labels") or raw.get("Labels") or {}),
+        "platform": _PLATFORMS.get(str(raw.get("Architecture") or "").lower(), ""),
     }
+
+
+def unpublished_platform(image: str, engine: str = "docker") -> str:
+    """The engine's platform when `image` is the default TOOLS_IMAGE and that is not
+    published for it (Apple Silicon until an arm64 image exists), else "". There the
+    local build stands in for the pinned digest."""
+    if image != TOOLS_IMAGE:
+        return ""
+    target = engine_platform(engine)
+    return "" if target in TOOLS_IMAGE_PLATFORMS else target
+
+
+def foreign_platform(image: str, engine: str = "docker") -> str:
+    """The local image's platform when it is not the engine's own (an amd64 image on
+    Apple Silicon runs emulated), else "" (also when absent or unknown)."""
+    info = docker_image_info(image, engine)
+    plat = (info or {}).get("platform") or ""
+    return plat if plat and plat != engine_platform(engine) else ""
 
 
 def _matches_digest(info: Optional[dict], digest: str) -> bool:
@@ -347,13 +380,20 @@ def pinned_digest_mismatch(image: str, engine: str = "docker") -> str:
 
 def resolve_pinned_image(image: str, log: Optional[LogFn] = None, engine: str = "docker") -> str:
     """The ref `docker run` should use. Unpinned refs are returned unchanged. A pinned
-    ref is kept when that exact image is present; when only name[:tag] is present with
-    another digest, warn and use it."""
+    ref is kept when that exact image is present, unless it is for another platform and a
+    native name[:tag] is present (a local build on Apple Silicon); when only name[:tag] is
+    present with another digest, warn and use it."""
     name, digest = split_image_digest(image)
-    if not digest or docker_image_present(image, engine):
+    if not digest:
+        return image
+    if docker_image_present(image, engine):
+        if foreign_platform(image, engine) and docker_image_present(name, engine) \
+                and not foreign_platform(name, engine):
+            _log(log, f"Using the local native image {name}, not the emulated {image}.")
+            return name
         return image
     if docker_image_present(name, engine):
-        warning = pinned_digest_mismatch(image, engine)
+        warning = "" if unpublished_platform(image, engine) else pinned_digest_mismatch(image, engine)
         if warning:
             _log(log, "WARNING: " + warning + " Using the local image.")
         return name
@@ -596,12 +636,23 @@ def ensure_docker_image(image: str = TOOLS_IMAGE, *, registry: str = "",
     name, digest = split_image_digest(image)
     if docker_image_present(image, engine):
         _log(log, f"Image already present: {image}")
+        plat = foreign_platform(image, engine)
+        if plat:
+            _log(log, f"Note: it is a {plat} image, so its tools run emulated. Remove it "
+                      f"(`{engine} image rm {image}`) and rerun setup to build a native one.")
         return
     ref = pull_ref(image, registry)
     if ref and ref != image and docker_image_present(ref, engine):
         _log(log, f"Image already present: {ref}")
         return
     pull_error = ""
+    unpublished = unpublished_platform(image, engine)
+    if ref and unpublished:
+        # A single-platform digest: the pull would download it all and then fail.
+        _log(log, f"The published tools image is for {', '.join(TOOLS_IMAGE_PLATFORMS)} only "
+                  f"and this engine runs {unpublished}: not pulling it.")
+        pull_error = f"no {unpublished} variant is published"
+        ref = ""
     if ref:
         try:
             pull_image(image, registry, log, engine)
@@ -617,7 +668,7 @@ def ensure_docker_image(image: str = TOOLS_IMAGE, *, registry: str = "",
         _log(log, "container.build_on_missing is true: building the image locally.")
         build_image_local(name, repo_root=repo_root, log=log, engine=engine,
                           fastgear_image=fastgear_image, fastgear_archive=fastgear_archive)
-    warning = pinned_digest_mismatch(image, engine)
+    warning = "" if unpublished else pinned_digest_mismatch(image, engine)
     if warning:
         _log(log, "WARNING: " + warning)
 
@@ -958,6 +1009,7 @@ __all__ = [
     "read_image_metadata", "environment_provenance", "database_provenance",
     "sif_sha256", "sif_labels", "pull_ref",
     "ensure_tools_image", "ensure_docker_image", "ensure_singularity_image",
-    "build_image_local", "pull_image", "engine_platform",
+    "build_image_local", "pull_image", "engine_platform", "foreign_platform",
+    "unpublished_platform",
     "smoke_test_tool",
 ]

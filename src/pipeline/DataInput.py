@@ -50,21 +50,25 @@ def find_genome_name_collisions(paths: Iterable[Any]) -> Dict[str, List[Path]]:
     A collision is two different files with the same Path.stem (the sample name the
     pipeline uses for every per-sample output) or the same genome_sample_key (the
     name after stripping ".gz" and the FASTA suffix), both taken from the resolved
-    file (symlinks followed, as DataInput does). The same file given twice is not a
-    collision. Members are listed as given.
+    file (symlinks followed, as DataInput does). Names that differ only by case collide
+    too: macOS and Windows file systems ignore case, so their per-sample folders would be
+    one. The same file given twice is not a collision. Members are listed as given, under
+    the first spelling seen.
     """
     seen: set[str] = set()
     by_key: Dict[str, List[Path]] = {}
+    spelling: Dict[str, str] = {}
     for item in paths:
         p = Path(str(item)).expanduser()
         ident, keys = genome_name_keys(p)
         if ident in seen:
             continue
         seen.add(ident)
-        for key in keys:
-            by_key.setdefault(key, []).append(p)
+        for folded, key in {k.casefold(): k for k in sorted(keys)}.items():
+            spelling.setdefault(folded, key)
+            by_key.setdefault(folded, []).append(p)
     return {
-        k: sorted(v, key=str)
+        spelling[k]: sorted(v, key=str)
         for k, v in sorted(by_key.items())
         if len(v) >= 2
     }
@@ -77,7 +81,8 @@ def format_genome_name_collisions(collisions: Mapping[str, List[Path]]) -> str:
     ]
     return (
         "genomes: sample names (file names without .gz and the FASTA suffix) must be "
-        "unique; rename or drop one file of each group:\n  " + "\n  ".join(lines)
+        "unique, also ignoring case (macOS and Windows file systems do); rename or drop "
+        "one file of each group:\n  " + "\n  ".join(lines)
     )
 
 

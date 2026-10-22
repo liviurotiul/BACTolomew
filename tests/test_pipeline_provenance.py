@@ -220,6 +220,19 @@ class ImageAcquisitionTest(unittest.TestCase):
         self.assertEqual(build[:4], ["docker", "build", "--platform", "linux/arm64"])
         self.assertIn("FASTGEAR=none", build)
 
+    def test_arm64_builds_the_amd64_only_default_image_and_runs_the_build(self) -> None:
+        # Apple Silicon: no pull of the amd64-only digest (about 20 GB, then a failure), a
+        # native build, and a run prefers that build over a leftover emulated digest image.
+        name = CR.split_image_digest(CR.TOOLS_IMAGE)[0]
+        with mock.patch.object(CR, "_probe", return_value=(0, "arm64")):
+            self.assertEqual(self._ensure(CR.TOOLS_IMAGE, pull_ok=True, build_on_missing=True),
+                             [("build", name)])
+            arch = {CR.TOOLS_IMAGE: "amd64", name: "arm64"}
+            with mock.patch.object(CR, "docker_image_present", return_value=True), \
+                    mock.patch.object(CR, "docker_image_info",
+                                      side_effect=lambda ref, engine="docker": {"platform": CR._PLATFORMS[arch[ref]]}):
+                self.assertEqual(CR.resolve_pinned_image(CR.TOOLS_IMAGE, log=lambda _m: None), name)
+
     def test_singularity_pulls_a_full_reference_without_registry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             sif = str(Path(tmp) / "tools.sif")

@@ -65,6 +65,11 @@ class GenomeNamesTest(_TmpCase):
         self.assertIn(str(b), msg)
         self.assertNotIn(str(c), msg)
         self.assertEqual([p.stem for p in self.data_input([a, c]).genomes], ["s1", "s2"])
+        # Names that differ only by case would share a folder on macOS and Windows.
+        upper = _write(self.root / "three" / "S2.fna")
+        with self.assertRaises(ValueError) as cm:
+            self.data_input([a, c, upper])
+        self.assertIn(str(upper), str(cm.exception))
 
 
 class GenomeSetTest(_TmpCase):

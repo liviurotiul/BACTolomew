@@ -37,6 +37,18 @@ UV_PYTHON="3.12"
 GLIBC_GUI_MIN="2.34"
 # The locked pipeline wheels (pyarrow, numpy, scipy, pandas) are manylinux_2_28; biopython has no musllinux wheel.
 GLIBC_HEADLESS_MIN="2.28"
+# macOS: the locked pyarrow and scipy wheels are macosx_12_0; Qt 6.10+ supports macOS 13 or newer.
+MACOS_MIN="12"
+MACOS_GUI_MIN="13"
+# Docker Desktop's Linux VM gets only part of the Mac's memory and disk; a full run needs at least this.
+DOCKER_VM_MEM_GB=16
+DOCKER_VM_DISK_GB=150
+
+# The system, as uname names it (BACTOLOMEW_UNAME_S / _M override it, for testing the macOS
+# branch on Linux).
+UNAME_S="${BACTOLOMEW_UNAME_S:-$(uname -s)}"
+UNAME_M="${BACTOLOMEW_UNAME_M:-$(uname -m)}"
+is_macos() { [ "$UNAME_S" = "Darwin" ]; }
 
 # Self-contained help so it works even over `curl ... | bash -s -- --help` (no file on disk).
 usage() {
@@ -49,6 +61,9 @@ Usage:
 
   # Bootstrap without cloning first (installs into ~/BACTolomew by default):
   curl -fsSL -o install.sh https://raw.githubusercontent.com/liviurotiul/BACTolomew/main/install.sh && bash install.sh
+
+Runs on Linux (x86_64; glibc $GLIBC_GUI_MIN or newer for the window) and macOS $MACOS_GUI_MIN or newer
+(Apple Silicon or Intel). On Windows, run it inside WSL 2 (Ubuntu).
 
 Options:
   --source <dir|tarball>  install from a local checkout (tracked and untracked, not ignored files)
@@ -70,6 +85,11 @@ EOF
 # --------------------------------------------------------------------------- #
 OS_ID=""; OS_LIKE=""; OS_VERSION=""; PKG=""
 detect_distro() {
+  if is_macos; then
+    OS_ID="macos"; OS_VERSION="${BACTOLOMEW_MACOS_VERSION:-$(sw_vers -productVersion 2>/dev/null || echo 0)}"
+    PKG="brew"   # for the hints; Homebrew may not be installed
+    return
+  fi
   if [ -r /etc/os-release ]; then
     OS_ID="$(. /etc/os-release && echo "${ID:-}")"
     OS_LIKE="$(. /etc/os-release && echo "${ID_LIKE:-}")"
@@ -84,8 +104,20 @@ detect_distro() {
   esac
 }
 
-# version_ge A B: A >= B for dotted versions.
-version_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
+# version_ge A B: A >= B for dotted numeric versions, in plain bash (no `sort -V`, which
+# macOS's sort may lack, and no awk, which minimal openSUSE Tumbleweed lacks).
+version_ge() {
+  local IFS=. i p q
+  local -a x y
+  read -r -a x <<< "$1"; read -r -a y <<< "$2"
+  for (( i = 0; i < ${#x[@]} || i < ${#y[@]}; i++ )); do
+    p="${x[i]:-0}"; q="${y[i]:-0}"
+    p="${p%%[!0-9]*}"; q="${q%%[!0-9]*}"
+    p=$(( 10#${p:-0} )); q=$(( 10#${q:-0} ))
+    [ "$p" = "$q" ] || { [ "$p" -gt "$q" ]; return; }
+  done
+  return 0
+}
 
 # Ubuntu 24.04+ and Debian 13+ renamed some libraries for the 64-bit time_t transition.
 apt_t64() {
@@ -102,6 +134,7 @@ pkg_install_cmd() {  # pkg_install_cmd <packages...>
     dnf)    echo "sudo dnf install $*" ;;
     zypper) echo "sudo zypper install $*" ;;
     pacman) echo "sudo pacman -S --needed $*" ;;
+    brew)   echo "brew install $*" ;;
     *)      echo "install: $*" ;;
   esac
 }
@@ -111,16 +144,38 @@ pkg_install_cmd() {  # pkg_install_cmd <packages...>
 # --------------------------------------------------------------------------- #
 glibc_version() {
   local v=""
-  v="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')" || true
+  v="$(getconf GNU_LIBC_VERSION 2>/dev/null)" || true
+  v="${v##* }"
   if [ -z "$v" ] && command -v ldd >/dev/null 2>&1; then
     v="$(ldd --version 2>&1 | head -n1 | grep -i -E 'glibc|gnu libc' | grep -oE '[0-9]+\.[0-9]+' | tail -n1)" || true
   fi
   echo "$v"
 }
 
+# Apple Silicon hardware (also when this shell runs under Rosetta and uname says x86_64).
+APPLE_SILICON=0
+check_platform_macos() {
+  if [ "$UNAME_M" = "arm64" ] || [ "${BACTOLOMEW_APPLE_SILICON:-$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)}" = 1 ]; then
+    APPLE_SILICON=1
+  fi
+  if [ "$APPLE_SILICON" = 1 ] && [ "$UNAME_M" = "x86_64" ]; then
+    warn "This terminal runs under Rosetta (x86_64) on an Apple Silicon Mac, so the venv would get Intel packages.
+  Open a native Terminal (Finder > Applications > Utilities > Terminal, Get Info: \"Open using Rosetta\" off)
+  and rerun install.sh there."
+  fi
+  if ! version_ge "${OS_VERSION:-0}" "$MACOS_MIN"; then
+    die "This Mac runs macOS $OS_VERSION, and BACTolomew's Python packages need macOS $MACOS_MIN or newer."
+  fi
+  if [ "$HEADLESS" != 1 ] && ! version_ge "${OS_VERSION:-0}" "$MACOS_GUI_MIN"; then
+    warn "macOS $OS_VERSION: the BACTolomew window (Qt 6.11) supports macOS $MACOS_GUI_MIN or newer and may not start here."
+  fi
+  say "System: macOS $OS_VERSION ($([ "$APPLE_SILICON" = 1 ] && echo "Apple Silicon" || echo "Intel"))"
+}
+
 check_platform() {
-  [ "$(uname -s)" = "Linux" ] || warn "BACTolomew is tested on Linux only (this is $(uname -s))."
-  [ "$(uname -m)" = "x86_64" ] || warn "BACTolomew is tested on x86_64 only (this is $(uname -m))."
+  if is_macos; then check_platform_macos; return; fi
+  [ "$UNAME_S" = "Linux" ] || warn "BACTolomew is tested on Linux and macOS only (this is $UNAME_S)."
+  [ "$UNAME_M" = "x86_64" ] || warn "BACTolomew is tested on x86_64 only (this is $UNAME_M)."
   local glibc; glibc="$(glibc_version)"
   if [ "$HEADLESS" = 1 ]; then
     if [ -z "$glibc" ]; then
@@ -171,6 +226,9 @@ venv_works() {
 
 python_hint() {
   case "$PKG" in
+    brew)
+      echo "  Homebrew (https://brew.sh):  brew install python@3.12"
+      echo "  or the python.org installer: https://www.python.org/downloads/macos/ (3.12 or 3.13)" ;;
     apt)
       if [ "$OS_ID" = "ubuntu" ] && ! version_ge "${OS_VERSION:-0}" "22.04"; then
         echo "  Ubuntu $OS_VERSION: sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt install python3.12 python3.12-venv"
@@ -189,6 +247,7 @@ python_hint() {
 
 venv_hint() {  # venv_hint <python> <3.X>
   case "$PKG" in
+    brew)   echo "  Homebrew and python.org Pythons include venv; reinstall it (brew reinstall python@$2) or use another one (--python)." ;;
     apt)    echo "  $(pkg_install_cmd "python$2-venv")" ;;
     dnf)    echo "  $(pkg_install_cmd "python$2" "python$2-pip")" ;;
     zypper) echo "  $(pkg_install_cmd "python${2/./}" "python${2/./}-pip")" ;;
@@ -197,8 +256,28 @@ venv_hint() {  # venv_hint <python> <3.X>
   esac
 }
 
+# The interpreters to try, in order. On macOS also Homebrew's (Apple Silicon /opt/homebrew,
+# Intel /usr/local) and python.org's framework builds, which need not be on PATH.
+python_candidates() {
+  local c v
+  for c in $PY_CANDIDATES; do echo "$c"; done
+  if is_macos; then
+    for v in 13 12 11 10 14; do
+      echo "/opt/homebrew/bin/python3.$v"
+      echo "/usr/local/bin/python3.$v"
+      echo "/Library/Frameworks/Python.framework/Versions/3.$v/bin/python3.$v"
+    done
+  fi
+}
+
+# macOS's /usr/bin/python3 is a stub until the Command Line Tools are installed: running it
+# opens an install dialog. Skip it then (its Python, 3.9, is too old anyway).
+skip_python() {
+  is_macos && [ "$1" = "/usr/bin/python3" ] && ! xcode-select -p >/dev/null 2>&1
+}
+
 find_python() {
-  local requested="${PYTHON_ARG:-${PYTHON:-}}" c path v
+  local requested="${PYTHON_ARG:-${PYTHON:-}}" c path v tried=""
   if [ -n "$requested" ]; then
     path="$(command -v "$requested" 2>/dev/null)" || die "--python $requested: not found."
     v="$(py_version "$path")" || die "$path is Python ${v:-?}; BACTolomew needs Python 3.$PY_MIN to 3.$PY_MAX."
@@ -206,8 +285,11 @@ find_python() {
 $(venv_hint "$path" "$v")"
     PY="$path"; say "Python: $PY ($v)"; return
   fi
-  for c in $PY_CANDIDATES; do
+  for c in $(python_candidates); do
     path="$(command -v "$c" 2>/dev/null)" || continue
+    case " $tried " in *" $path "*) continue ;; esac
+    tried="$tried $path"
+    skip_python "$path" && continue
     if v="$(py_version "$path")"; then
       if venv_works "$path"; then
         PY="$path"; say "Python: $PY ($v)"; return
@@ -240,6 +322,7 @@ check_runtime() {
     say "Viewer install: no container runtime needed (running predictions later needs one)"
     return 0
   fi
+  if is_macos; then check_runtime_macos; return 0; fi
   local to=""; command -v timeout >/dev/null 2>&1 && to="timeout 30"
   if command -v docker >/dev/null 2>&1; then
     rc=0; out="$($to docker info 2>&1 >/dev/null)" || rc=$?
@@ -278,6 +361,52 @@ check_runtime() {
   fi
 }
 
+# macOS: Docker Desktop (or Podman Desktop's machine); its Linux VM runs the tools image.
+check_runtime_macos() {
+  local out rc mem_gb ncpu arch
+  if command -v docker >/dev/null 2>&1; then
+    rc=0; out="$(docker info --format '{{.MemTotal}} {{.NCPU}} {{.Architecture}}' 2>&1)" || rc=$?
+    if [ "$rc" = 0 ]; then
+      set -- $out
+      mem_gb=$(( ${1:-0} / 1073741824 )); ncpu="${2:-?}"; arch="${3:-?}"
+      say "Container runtime: Docker ($arch VM, $ncpu CPUs, $mem_gb GB memory)"
+      if [ "$mem_gb" -lt "$DOCKER_VM_MEM_GB" ]; then
+        warn "Docker Desktop gives its Linux VM $mem_gb GB of memory; Bakta, Panaroo and CheckM2 need $DOCKER_VM_MEM_GB GB or more.
+  Raise it in Docker Desktop: Settings > Resources > Memory limit (and Disk usage limit to $DOCKER_VM_DISK_GB GB or more:
+  the tools image is about 20 GB and the databases about 100 GB), then Apply & restart."
+      fi
+      apple_silicon_note
+      return 0
+    fi
+    if printf '%s' "$out" | grep -qi -E "cannot connect|is the docker daemon running|no such file"; then
+      warn "Docker is installed but not running. Start Docker Desktop (open -a Docker), wait for it to say
+  \"Engine running\", then run \`./bactolomew setup\`."
+    else
+      warn "\`docker info\` failed: $(printf '%s' "$out" | tail -n1)"
+    fi
+    apple_silicon_note
+    return 0
+  fi
+  if command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
+    say "Container runtime: podman (podman machine)"
+    apple_silicon_note
+    return 0
+  fi
+  warn "No container runtime: the window can open existing results, but running the pipeline needs Docker.
+    Install Docker Desktop for Mac ($([ "$APPLE_SILICON" = 1 ] && echo "Apple silicon" || echo "Intel chip")):
+      https://docs.docker.com/desktop/setup/install/mac-install/
+    start it, and in Settings > Resources give it $DOCKER_VM_MEM_GB GB of memory or more and a disk limit of
+    $DOCKER_VM_DISK_GB GB or more; then run \`./bactolomew setup\`."
+  apple_silicon_note
+}
+
+apple_silicon_note() {
+  [ "$APPLE_SILICON" = 1 ] || return 0
+  say "Apple Silicon: no arm64 tools image is published yet, so \`./bactolomew setup\` builds it from
+  docker/Dockerfile on this Mac instead of downloading the Intel one (about an hour; FastBAPS, no
+  fastGEAR, which is x86_64 only)."
+}
+
 # --------------------------------------------------------------------------- #
 # Obtaining the code
 # --------------------------------------------------------------------------- #
@@ -306,7 +435,9 @@ copy_tree() {  # copy_tree <src> <dest>
         local f n=0
         while IFS= read -r -d '' f; do
           if [ -e "$src/$f" ] || [ -L "$src/$f" ]; then
-            (cd "$src" && cp -P -p --parents "$f" "$dest/") || { rm -f "$list"; die "failed to copy $src/$f"; }
+            # No `cp --parents`: macOS's cp lacks it.
+            mkdir -p "$dest/$(dirname "$f")" && cp -P -p "$src/$f" "$dest/$f" \
+              || { rm -f "$list"; die "failed to copy $src/$f"; }
             n=$((n + 1))
           fi
         done < "$list"
@@ -357,7 +488,7 @@ obtain_code() {
     source)
       copy_tree "$src" "$INSTALL_DIR" ;;
     clone)
-      command -v git >/dev/null 2>&1 || die "git not found (needed to clone $GITHUB_URL). $(pkg_install_cmd git)"
+      command -v git >/dev/null 2>&1 || die "git not found (needed to clone $GITHUB_URL). $(is_macos && echo "xcode-select --install" || pkg_install_cmd git)"
       if have_checkout "$INSTALL_DIR"; then
         say "Reusing existing checkout at $INSTALL_DIR"
       else
@@ -416,6 +547,10 @@ $(venv_hint "$PY" "$(py_version "$PY" || true)")"
   if [ "$rc" != 0 ]; then
     if grep -q -E "No matching distribution|Could not find a version that satisfies" "$log"; then
       rm -f "$log"
+      if is_macos; then
+        die "pip found no binary package for this Mac ($("$VENV/bin/python" -V 2>&1), $("$VENV/bin/python" -c 'import platform; print(platform.machine())' 2>/dev/null), macOS $OS_VERSION).
+  BACTolomew needs Python 3.$PY_MIN to 3.$PY_MAX on macOS $MACOS_MIN or newer. If the network is fine, check the Python version (--python)."
+      fi
       die "pip found no binary package for this system ($("$VENV/bin/python" -V 2>&1), glibc $(glibc_version)).
   BACTolomew needs Python 3.$PY_MIN to 3.$PY_MAX on x86_64 Linux with glibc $([ "$HEADLESS" = 1 ] && echo "$GLIBC_HEADLESS_MIN" || echo "$GLIBC_GUI_MIN") or newer.
   If the network is fine, check the Python version (--python) $([ "$HEADLESS" = 1 ] || echo "or install with --headless (no window)")."
@@ -498,20 +633,22 @@ qt_full_list() {
       echo "libnss3 libnspr4 libxkbcommon0 libxkbcommon-x11-0 libxcomposite1 libxdamage1 libxrandr2" \
            "libxfixes3 libxtst6 libxkbfile1 libgbm1 $asound libxshmfence1 fontconfig libgl1 libegl1 $glib" \
            "libdbus-1-3 libgssapi-krb5-2 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1" \
-           "libxcb-render-util0 libxcb-render0 libxcb-shape0 libxcb-util1 libxcb-xkb1" ;;
+           "libxcb-render-util0 libxcb-render0 libxcb-shape0 libxcb-util1 libxcb-xkb1 fonts-dejavu-core" ;;
     dnf)
       echo "nss nspr libxkbcommon libxkbcommon-x11 libXcomposite libXdamage libXrandr libXfixes libXtst" \
            "libxkbfile mesa-libgbm alsa-lib libxshmfence fontconfig mesa-libGL mesa-libEGL glib2 dbus-libs" \
-           "krb5-libs xcb-util-cursor xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util" ;;
+           "krb5-libs xcb-util-cursor xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util" \
+           "dejavu-sans-fonts" ;;
     zypper)
       echo "mozilla-nss mozilla-nspr libxkbcommon0 libxkbcommon-x11-0 libXcomposite1 libXdamage1 libXrandr2" \
            "libXfixes3 libXtst6 libxkbfile1 libgbm1 libasound2 libxshmfence1 fontconfig libglvnd" \
            "libglib-2_0-0 libgthread-2_0-0 libdbus-1-3 krb5 libxcb-cursor0 libxcb-icccm4 libxcb-image0" \
-           "libxcb-keysyms1 libxcb-render-util0 libxcb-render0 libxcb-shape0 libxcb-util1 libxcb-xkb1" ;;
+           "libxcb-keysyms1 libxcb-render-util0 libxcb-render0 libxcb-shape0 libxcb-util1 libxcb-xkb1" \
+           "dejavu-fonts" ;;
     pacman)
       echo "nss nspr libxkbcommon libxkbcommon-x11 libxcomposite libxdamage libxrandr libxfixes libxtst" \
            "libxkbfile mesa alsa-lib libxshmfence fontconfig libglvnd glib2 dbus krb5 xcb-util-cursor" \
-           "xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util libxcb" ;;
+           "xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util libxcb ttf-dejavu" ;;
   esac
 }
 
@@ -520,13 +657,19 @@ qt_full_list() {
 check_qt_libs() {
   local import_err="" missing="" qt so pkgs="" unmapped="" f
   import_err="$(QT_QPA_PLATFORM=offscreen "$VENV/bin/python" -c 'import PyQt6.QtWidgets, PyQt6.QtWebEngineWidgets' 2>&1)" || true
+  if is_macos; then  # the macOS wheels bring their Qt frameworks; no system libraries to check
+    if [ -z "$import_err" ]; then say "Qt: PyQt6 and WebEngine load"
+    else warn "PyQt6 / WebEngine do not import:
+$(printf '%s\n' "$import_err" | tail -n 3 | sed 's/^/    /')"; fi
+    return
+  fi
   qt="$("$VENV/bin/python" -c 'import os, importlib.util as u; s = u.find_spec("PyQt6"); print(os.path.join(os.path.dirname(s.origin), "Qt6"))' 2>/dev/null)" || qt=""
   if [ -n "$qt" ] && [ -d "$qt" ] && command -v ldd >/dev/null 2>&1; then
     # The PyQt6 modules the app loads (ldd follows their Qt libraries), the xcb plugin and
     # the WebEngine helper process; Qt's optional modules (multimedia, wayland, ...) are left out.
     missing="$(for f in "$qt"/plugins/platforms/libqxcb.so "$qt"/libexec/QtWebEngineProcess \
                         "$qt"/../Qt{Core,Gui,Widgets,Network,Svg,SvgWidgets,OpenGL,OpenGLWidgets,WebChannel,WebEngineCore,WebEngineWidgets}.*so; do
-                 [ -e "$f" ] && ldd "$f" 2>/dev/null | awk '/not found/ {print $1}'
+                 [ -e "$f" ] && ldd "$f" 2>/dev/null | grep 'not found' | sed 's/^[[:space:]]*//; s/[[:space:]].*//'
                done | grep -v '^libQt6' | sort -u)" || true
   fi
   # The import error names the first missing library even without ldd.
@@ -561,6 +704,26 @@ $(printf '%s ' $missing | fold -s -w 96 | sed 's/^/    /')"
   printf '  Then check with:  %s check\n' "$INSTALL_DIR/bactolomew" >&2
 }
 
+# Minimal Arch and openSUSE images have no font at all: Qt then loads but draws every
+# letter as a box. Look for a font file where fontconfig looks by default.
+check_fonts() {
+  local pkg
+  is_macos && return 0
+  # A bash glob, not find: minimal Tumbleweed has no findutils.
+  if (shopt -s nullglob globstar nocaseglob
+      for f in /usr/share/fonts /usr/local/share/fonts "$HOME/.local/share/fonts" "$HOME/.fonts"; do
+        for f in "$f"/**/*.{ttf,otf,ttc,pfb,pcf,pcf.gz}; do exit 0; done
+      done; exit 1); then
+    return 0
+  fi
+  case "$PKG" in
+    apt) pkg="fonts-dejavu-core" ;; dnf) pkg="dejavu-sans-fonts" ;;
+    zypper) pkg="dejavu-fonts" ;; pacman) pkg="ttf-dejavu" ;; *) pkg="a TrueType font package (DejaVu)" ;;
+  esac
+  warn "No fonts are installed, so the window would show boxes instead of text. Install one with:
+    $(pkg_install_cmd "$pkg")"
+}
+
 # --------------------------------------------------------------------------- #
 # Launcher
 # --------------------------------------------------------------------------- #
@@ -573,7 +736,7 @@ write_launcher() {
 case "\${1:-gui}" in
   setup|run|check|db|--version|-h|--help) ;;
   *) echo "This is a headless BACTolomew install (no Qt): it supports setup, run, check and db." >&2
-     echo "For the window, rerun install.sh without --headless on a machine with glibc $GLIBC_GUI_MIN or newer." >&2
+     echo "For the window, rerun install.sh without --headless$(is_macos || echo " on a machine with glibc $GLIBC_GUI_MIN or newer")." >&2
      exit 1 ;;
 esac
 exec "$VENV/bin/python" "$INSTALL_DIR/src/bactolomew_main.py" "\$@"
@@ -634,7 +797,7 @@ main() {
   # --- 4. launcher, then the Qt libraries ----------------------------------
   write_launcher
   [ "$VIEWER" = 1 ] && write_viewer_config
-  [ "$HEADLESS" = 1 ] || check_qt_libs
+  [ "$HEADLESS" = 1 ] || { check_qt_libs; check_fonts; }
 
   say "Done. Launch with:  $LAUNCHER"
   if [ "$VIEWER" = 1 ]; then
