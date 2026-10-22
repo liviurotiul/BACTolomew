@@ -28,6 +28,7 @@ from pipeline.CoreTreeWorkflow import (
     tree_stamp_path,
 )
 from pipeline.FastGearWorkflow import validate_sample_clades_tsv
+from pipeline.PopulationStructure import method_dir, method_label, run_population_method
 from pipeline.GubbinsWorkflow import (
     MASKED_ALIGNMENT_REL,
     SUMMARY_SCHEMA_VERSION as GUBBINS_SCHEMA_VERSION,
@@ -745,23 +746,38 @@ def validate_phylogeny_outputs(output_dir: Path, genomes: Sequence[Any] | None =
     return errors
 
 
-def validate_fastgear_outputs(output_dir: Path, genomes: Sequence[Any]) -> list[str]:
-    fastgear_dir = Path(output_dir) / "fastgear"
-    sample_clades = fastgear_dir / "sample_clades.tsv"
-    lineage_information = fastgear_dir / "output" / "lineage_information.txt"
-    result_mat = fastgear_dir / "fastgear_res.mat"
+def population_output_files(output_dir: Path, method: str) -> dict[str, Path]:
+    """The outputs of the population structure step (fastgear_clades) for a method."""
+    folder = method_dir(output_dir, method)
+    if method == "fastbaps":
+        return {"sample_clades": folder / "sample_clades.tsv", "fastbaps_clusters": folder / "fastbaps_clusters.tsv"}
+    return {
+        "sample_clades": folder / "sample_clades.tsv",
+        "lineage_information": folder / "output" / "lineage_information.txt",
+        "result_mat": folder / "fastgear_res.mat",
+    }
+
+
+def validate_fastgear_outputs(output_dir: Path, genomes: Sequence[Any], method: str | None = "") -> list[str]:
+    """The population structure step's outputs, of the run's recorded method (or of
+    ``method``): fastGEAR in fastgear/ (every run before FastBAPS), FastBAPS in fastbaps/."""
+    method = run_population_method(output_dir) if method == "" else method
+    if method is None:
+        return ["The run has no population structure method (neither fastGEAR nor FastBAPS was available)."]
+    label = method_label(method)
+    files = population_output_files(output_dir, method)
 
     errors: list[str] = []
-    for path in (sample_clades, lineage_information, result_mat):
+    for path in files.values():
         if not file_has_bytes(path):
-            errors.append(f"Missing or empty fastGEAR output: {path}")
+            errors.append(f"Missing or empty {label} output: {path}")
     if errors:
         return errors
 
     try:
-        validate_sample_clades_tsv(sample_clades, expected_samples=_stems(genomes))
+        validate_sample_clades_tsv(files["sample_clades"], expected_samples=_stems(genomes))
     except Exception as exc:
-        errors.append(f"Invalid fastGEAR sample_clades.tsv: {exc}")
+        errors.append(f"Invalid {label} sample_clades.tsv: {exc}")
     return errors
 
 
@@ -917,9 +933,14 @@ def validate_step_outputs(
 
 def skippable_steps(run_cfg: Mapping[str, Any] | None) -> frozenset[str]:
     """Required steps a run skips without failing: the marker search when no marker database
-    was installed, the reference locus search when no compound database was."""
+    was installed, the reference locus search when no compound database was, the population
+    structure when the tools image had neither fastGEAR nor FastBAPS."""
     _genomes, marker_sequences, reference_locus_sequences = _validator_inputs(run_cfg)
     out: set[str] = set()
+    inputs = run_cfg.get("inputs") if isinstance(run_cfg, Mapping) else None
+    population = inputs.get("population_structure") if isinstance(inputs, Mapping) else None
+    if isinstance(population, Mapping) and population.get("method") is None:
+        out.add(STEP_FASTGEAR)
     if not marker_sequences:
         out.add(STEP_DIAMOND_MARKERS)
     if not reference_locus_sequences:
@@ -1023,6 +1044,7 @@ __all__ = [
     "validate_gubbins_outputs",
     "validate_phylogeny_outputs",
     "validate_fastgear_outputs",
+    "population_output_files",
     "validate_chewbbaca_outputs",
     "validate_marker_db_outputs",
     "validate_marker_hit_outputs",

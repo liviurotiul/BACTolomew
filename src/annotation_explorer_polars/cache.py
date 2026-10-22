@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 
 from .polars_io import read_parquet_df
 from pipeline.DbCatalog import MARKER_DB_CATALOG_PATH, load_db_catalog_index
+from pipeline.RunShare import TABLES_DIR as SHARED_TABLES_DIR, is_shared_run
 
 CACHE_FILENAME = "ui_cache.json"
 CACHE_DIRNAME = "cache"
@@ -88,10 +89,13 @@ def save_cache(output_dir: Optional[Path], metadata_csv: Optional[Path]) -> None
     path.write_text(json.dumps(data, indent=2, sort_keys=True))
 
 
+def run_cache_slug(run_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", run_id or "run").strip("_") or "run"
+
+
 def cache_run_dir(run_id: str) -> Path:
     root = ensure_cache_dir()
-    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_id or "run").strip("_") or "run"
-    path = root / slug
+    path = root / run_cache_slug(run_id)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -267,8 +271,38 @@ def write_cached_tables(run_id: str, output_dir: Path, ann_df, ref_df, marker_hi
     return ann_path, ref_path, marker_hits_path
 
 
-def read_cached_tables(run_id: str):
-    ann_path, ref_path, marker_hits_path = cached_table_paths(run_id)
+def shared_table_paths(output_dir: Path) -> tuple[Path, Path, Path]:
+    """A shared run's tables: they come with the run (``share/tables``), not
+    from the cache, since a shared run has nothing to build them from."""
+    tables = Path(output_dir) / SHARED_TABLES_DIR
+    return (
+        tables / ANNOTATIONS_CACHE_FILENAME,
+        tables / REFERENCE_LOCUS_CACHE_FILENAME,
+        tables / MARKER_HITS_CACHE_FILENAME,
+    )
+
+
+def table_paths(run_id: str, output_dir: Path) -> tuple[Path, Path, Path]:
+    """The run's three tables: a shared run's own, else the cache's."""
+    if is_shared_run(output_dir):
+        return shared_table_paths(output_dir)
+    return cached_table_paths(run_id)
+
+
+def shared_tables_status(output_dir: Path) -> tuple[bool, Optional[int]]:
+    """(all three tables present, their format version) of a shared run."""
+    present = all(path.is_file() for path in shared_table_paths(output_dir))
+    try:
+        meta = json.loads((Path(output_dir) / SHARED_TABLES_DIR / TABLE_CACHE_META_FILENAME).read_text())
+    except Exception:
+        meta = None
+    schema = meta.get("schema_version") if isinstance(meta, dict) else None
+    return present, schema if isinstance(schema, int) else None
+
+
+def read_cached_tables(run_id: str, paths: Optional[tuple[Path, Path, Path]] = None):
+    """The run's three tables, from the cache (or from ``paths``)."""
+    ann_path, ref_path, marker_hits_path = paths or cached_table_paths(run_id)
     if not ann_path.exists() or not ref_path.exists() or not marker_hits_path.exists():
         raise FileNotFoundError("Cached parquet tables not found.")
     try:
@@ -296,8 +330,10 @@ def run_cache_path(run_id: str) -> Path:
     return cache_run_dir(run_id) / CACHE_FILENAME
 
 
-def load_run_cache(run_id: str) -> Dict[str, str]:
-    path = run_cache_path(run_id)
+def load_run_cache(run_id: str, *, create: bool = True) -> Dict[str, str]:
+    """The run's remembered metadata choice; ``create`` False only reads (the
+    run list shows it without making a cache folder for every run)."""
+    path = run_cache_path(run_id) if create else cache_root() / run_cache_slug(run_id) / CACHE_FILENAME
     if not path.exists():
         return {}
     try:

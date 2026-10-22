@@ -22,12 +22,15 @@ from pipeline.DbCatalog import (
     load_db_catalog,
 )
 from pipeline.ToolEnv import (
+    APP_MODE_FULL,
+    APP_MODE_VIEWER,
     DEV_BAKTA_DB_PATH,
     REQUIRED_TOOL_ENVS,
     TOOLS_IMAGE,
     configured_assembly_qc_settings,
     configured_chewbbaca_settings,
     configured_fastgear_image,
+    configured_app_mode,
     configured_fastgear_settings,
     project_root,
 )
@@ -337,6 +340,9 @@ def _db_config_outdated(root: Path, config: dict) -> bool:
 
 
 def collect_setup_missing_paths(root: Path, config: dict, *, dev_mode: bool = False) -> list[Path]:
+    if configured_app_mode(config) == APP_MODE_VIEWER:
+        # A viewer install opens runs made elsewhere: no tools image, no databases.
+        return [p for p in (root / "runs", root / "cache") if not p.is_dir()]
     catalogs_dir = _project_catalog_dir(root)
     marker_catalog = _project_marker_catalog_path(root)
     compound_catalog = _project_compound_catalog_path(root)
@@ -685,6 +691,7 @@ def _write_setup_config(
         "envs_root": str((root / ENVS_DIRNAME).resolve()),
         "envs": envs,
         "dev_mode": bool(dev_mode),
+        "mode": APP_MODE_FULL,  # a viewer install that ran setup can run the pipeline now
         "databases": db_config,
         "created_at": datetime.now().astimezone().isoformat(),
     }
@@ -709,6 +716,22 @@ def _write_setup_config(
         config.setdefault(key, value)
 
     (root / "bactolomew_config.json").write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def write_viewer_config(root: Path) -> Path:
+    """A viewer-only install: the config says so (keeping any other key) and the runs and
+    cache folders exist. Nothing is downloaded; `setup` later makes it a full install."""
+    root = Path(root)
+    config = _read_config(root)
+    config["mode"] = APP_MODE_VIEWER
+    config.setdefault("created_at", datetime.now().astimezone().isoformat())
+    for name in ("runs", "cache"):
+        (root / name).mkdir(parents=True, exist_ok=True)
+    path = root / "bactolomew_config.json"
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+    return path
 
 
 # --------------------------------------------------------------------------- #
@@ -1142,7 +1165,7 @@ class SetupJob:
     # ---- CheckM2 ----
     def _find_checkm2(self) -> Optional[Path]:
         if not self.container:
-            path = _native_checkm2_db_path(self._env_path("assembly_qc"))
+            path = _native_checkm2_db_path(self._env_path("checkm2"))
             return path if path.is_file() else None
         qc = self.config.get("assembly_qc") if isinstance(self.config.get("assembly_qc"), dict) else {}
         configured = str(qc.get("checkm2_database_path") or "").strip()
@@ -1155,7 +1178,7 @@ class SetupJob:
         from pipeline import DbDownload
 
         if not self.container:
-            return _ensure_checkm2_db(self._env_path("assembly_qc"), log=log)
+            return _ensure_checkm2_db(self._env_path("checkm2"), log=log)
         record = DbDownload.install_checkm2(self.root / CHECKM2_DB_DIRNAME, config=self.config, log=log)
         path = Path(record["path"])
         if not path.is_file():

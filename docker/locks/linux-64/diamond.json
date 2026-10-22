@@ -1,0 +1,72 @@
+[
+ {
+  "name": "libzlib",
+  "version": "1.3.2",
+  "build": "h25fd6f3_3",
+  "channel": "conda-forge",
+  "subdir": "linux-64",
+  "url": "https://conda.anaconda.org/conda-forge/linux-64/libzlib-1.3.2-h25fd6f3_3.conda",
+  "md5": "0de0122d9570a8ab637c6b73db268389",
+  "sha256": "eb8a0db0aa570124f7d2a93d7c7f596e3390df5e047818d873baad32985fc736"
+ },
+ {
+  "name": "libgomp",
+  "version": "16.2.0",
+  "build": "he0feb66_7",
+  "channel": "conda-forge",
+  "subdir": "linux-64",
+  "url": "https://conda.anaconda.org/conda-forge/linux-64/libgomp-16.2.0-he0feb66_7.conda",
+  "md5": "d904c7ddd95e026254b4b80808ee9e12",
+  "sha256": "92a0bb350c7be6a4eedcb4e111c60aefd176018e6b1c009a6e025dbe9bbcd758"
+ },
+ {
+  "name": "_openmp_mutex",
+  "version": "4.5",
+  "build": "20_gnu",
+  "channel": "conda-forge",
+  "subdir": "linux-64",
+  "url": "https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda",
+  "md5": "a9f577daf3de00bca7c3c76c0ecbd1de",
+  "sha256": "1dd3fffd892081df9726d7eb7e0dea6198962ba775bd88842135a4ddb4deb3c9"
+ },
+ {
+  "name": "libgcc",
+  "version": "16.2.0",
+  "build": "ha9f2e26_7",
+  "channel": "conda-forge",
+  "subdir": "linux-64",
+  "url": "https://conda.anaconda.org/conda-forge/linux-64/libgcc-16.2.0-ha9f2e26_7.conda",
+  "md5": "735629b400b70eeab21a2ba8f5b1c2ce",
+  "sha256": "e031634c3a928f9594eba868bc46ef5230d6571a364a0c63215b06c4563bfcea"
+ },
+ {
+  "name": "libsqlite",
+  "version": "3.54.1",
+  "build": "h0737f62_100",
+  "channel": "conda-forge",
+  "subdir": "linux-64",
+  "url": "https://conda.anaconda.org/conda-forge/linux-64/libsqlite-3.54.1-h0737f62_100.conda",
+  "md5": "5fdfd335c3d653e41c1eea1353d827d0",
+  "sha256": "107ba2f9134b45a6fdaf8d2485f432e3a643fdfaf711a325d0c9139b580b3523"
+ },
+ {
+  "name": "libstdcxx",
+  "version": "16.2.0",
+  "build": "h934c35e_7",
+  "channel": "conda-forge",
+  "subdir": "linux-64",
+  "url": "https://conda.anaconda.org/conda-forge/linux-64/libstdcxx-16.2.0-h934c35e_7.conda",
+  "md5": "9b6707e0caca917fa6ea9ee473f37a5d",
+  "sha256": "fa7018298629fc429971fffd6ecba3d27a7b02e4e890d6a93ea01ffebe8cb745"
+ },
+ {
+  "name": "diamond",
+  "version": "2.2.3",
+  "build": "he361c42_0",
+  "channel": "bioconda",
+  "subdir": "linux-64",
+  "url": "https://conda.anaconda.org/bioconda/linux-64/diamond-2.2.3-he361c42_0.conda",
+  "md5": "a2fee5dc0c0e7a9837464ad9c17e451c",
+  "sha256": "171f8cd041aad153fe25b5f994d1e2084d7d3a6fb576172ba4520c1d47a6e1a2"
+ }
+]

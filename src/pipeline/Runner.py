@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from pipeline import __version__
 from pipeline.AmrFinderWorkflow import (
     MUTATION_COLUMNS,
     amrfinder_reuse_issue,
@@ -80,7 +81,14 @@ from pipeline.CoreTreeWorkflow import (
     run_core_tree,
     run_recombination_refit,
 )
+from pipeline.FastBapsWorkflow import fastbaps_reuse_issue, run_fastbaps_clades
 from pipeline.FastGearWorkflow import fastgear_engine, fastgear_reuse_issue, run_fastgear_clades
+from pipeline.PopulationStructure import (
+    PopulationChoice,
+    configured_population_choice,
+    method_label,
+    population_method_explicit,
+)
 from pipeline.GubbinsWorkflow import (
     GroupPlan,
     expected_gubbins_files,
@@ -131,6 +139,7 @@ from pipeline.RunValidation import (
     validate_completed_run,
     validate_core_alignment_outputs,
     validate_core_tree_outputs,
+    population_output_files,
     validate_fastgear_outputs,
     validate_gubbins_outputs,
     validate_marker_db_outputs,
@@ -227,12 +236,6 @@ PANAROO_OUT_FILES = [
 ]
 
 MOBSUITE_OUTPUT_FILES = list(MOBSUITE_OUT_FILES)
-
-FASTGEAR_OUT_FILES = [
-    Path("fastgear_res.mat"),
-    Path("output") / "lineage_information.txt",
-    Path("sample_clades.tsv"),
-]
 
 # The Snippy tree (raw, unrooted) and the rooted tree index written from every tree.
 PHYLOGENY_OUT_FILES = [
@@ -484,6 +487,7 @@ def _build_expected_outputs(
     run_id: str,
     gubbins_plan: GroupPlan | None = None,
     gubbins_summary: dict | None = None,
+    population: PopulationChoice | None = None,
 ) -> list[str]:
     output = CFG.output
     genomes = [Path(p) for p in CFG.genomes]
@@ -538,9 +542,11 @@ def _build_expected_outputs(
     for path in _expected_phylogeny_paths(CFG):
         expected.append(path)
 
-    # fastGEAR clades from the ordered core alignment
-    for relpath in FASTGEAR_OUT_FILES:
-        expected.append(output / "fastgear" / relpath)
+    # Population structure (fastGEAR or FastBAPS) from the ordered core alignment; none
+    # when the tools image has neither method.
+    method = population.method if population is not None else "fastgear"
+    if method is not None:
+        expected.extend(population_output_files(output, method).values())
 
     for path in _expected_chewbbaca_paths(CFG):
         expected.append(path)
@@ -584,7 +590,9 @@ def _build_marker_resistance_metadata_inputs(marker_paths: list[Path]) -> dict[s
     )
 
 
-def _build_run_inputs(CFG: DataInput, *, thread_plan: dict[str, int]) -> dict[str, object]:
+def _build_run_inputs(
+    CFG: DataInput, *, thread_plan: dict[str, int], population: PopulationChoice | None = None
+) -> dict[str, object]:
     inputs: dict[str, object] = {
         "genomes": [str(p) for p in CFG.genomes],
         "marker_sequences": [str(p) for p in CFG.marker_sequences],
@@ -616,6 +624,10 @@ def _build_run_inputs(CFG: DataInput, *, thread_plan: dict[str, int]) -> dict[st
         "fastgear": CFG.fastgear_config or configured_fastgear_settings(),
         "phylo": configured_phylo_settings(CFG.phylo_config),
     }
+    if population is not None:
+        # The population structure method the run uses (PopulationStructure: the explorer
+        # and the validators find its folder from this record).
+        inputs["population_structure"] = population.record()
     marker_resistance_metadata = _build_marker_resistance_metadata_inputs(CFG.marker_sequences)
     if marker_resistance_metadata:
         inputs["marker_resistance_metadata"] = marker_resistance_metadata
@@ -714,10 +726,12 @@ def _build_run_config(
     thread_plan: dict[str, int],
     environment: dict | None = None,
     environment_history: list[dict] | None = None,
+    population: PopulationChoice | None = None,
 ) -> dict:
-    inputs = _build_run_inputs(CFG, thread_plan=thread_plan)
+    inputs = _build_run_inputs(CFG, thread_plan=thread_plan, population=population)
     config = {
         "created_at": _now_iso(),
+        "bactolomew_version": __version__,
         "sample_set_id": sample_set_id,
         "run_id": run_id,
         "annotation_id_strategy": annotation_id_strategy,
@@ -748,15 +762,17 @@ def _build_run_report(
     warnings: list[dict[str, str]],
     environment: dict | None = None,
     environment_history: list[dict] | None = None,
+    population: PopulationChoice | None = None,
 ) -> dict:
     report: dict = {
         "start_time": start_time,
         "end_time": _now_iso(),
         "status": status,
+        "bactolomew_version": __version__,
         "outputs_validated": bool(outputs_validated),
         "sample_set_id": sample_set_id,
         "run_id": run_id,
-        "inputs": _build_run_inputs(CFG, thread_plan=thread_plan),
+        "inputs": _build_run_inputs(CFG, thread_plan=thread_plan, population=population),
         "steps": steps,
         "warnings": list(warnings),
         "tools": {
@@ -801,7 +817,9 @@ def _build_run_state(
         "sample_set_id": sample_set_id,
         "run_id": run_id,
         "current_step": current_step,
-        "planned_steps": planned_steps(),
+        "planned_steps": planned_steps(
+            (inputs.get("population_structure") or {"method": "fastgear"}).get("method")
+        ),
         "inputs": inputs,
         "steps": steps,
         "warnings": list(warnings),
@@ -885,6 +903,8 @@ def _collect_versions(tools_used: set[str]) -> dict[str, str]:
         "snippy": _cmds("snippy", ["--version"], ["--help"]),
         "raxml-ng": _cmds("raxml-ng", ["--version"], ["--help"]),
         "iqtree2": _cmds("iqtree2", ["--version"]),
+        "fastbaps": _cmds("fastbaps", ["-e", 'cat(as.character(packageVersion("fastbaps")))'],
+                          executables=("Rscript",)),
         "minimap2": _cmds("minimap2", ["--version"]),
         "docker": _cmds("docker", ["--version"]),
         "podman": [["podman", "--version"]],
@@ -1578,6 +1598,19 @@ def _run_workflow_impl(CFG: DataInput, *, environment: dict | None = None):
     validate_chewbbaca_settings(CFG.chewbbaca_config)
     phylo_settings = configured_phylo_settings(CFG.phylo_config)
     _check_phylo_settings(CFG, phylo_settings)
+    # The population structure method, from what the tools image holds; a method set for
+    # the run or in the config that the image lacks stops the run here, before anything is
+    # written (the default, FastBAPS, falls back to fastGEAR on an image without it).
+    population = configured_population_choice(
+        phylo_settings, explicit=population_method_explicit(CFG.phylo_config)
+    )
+    logger.info(
+        "Population structure: %s (phylo.population_method %s; in the tools image: %s).",
+        method_label(population.method) if population.method else "none",
+        population.requested,
+        ", ".join(method_label(m) for m in population.available) if population.available is not None
+        else "not checked",
+    )
     try:
         CFG.output.mkdir(parents=True, exist_ok=True)
         logger.info(f"Output folder is ready: {CFG.output}")
@@ -1610,6 +1643,7 @@ def _run_workflow_impl(CFG: DataInput, *, environment: dict | None = None):
         thread_plan=thread_plan,
         environment=environment,
         environment_history=environment_history,
+        population=population,
     )
     _write_json(CFG.output / RUN_CONFIG_FILENAME, run_config)
 
@@ -1633,7 +1667,7 @@ def _run_workflow_impl(CFG: DataInput, *, environment: dict | None = None):
                 "sample_set_id": sample_set_id,
                 "run_id": run_id,
                 "output_dir": str(CFG.output),
-                "files": _build_expected_outputs(CFG, run_id=run_id, **expected_args),
+                "files": _build_expected_outputs(CFG, run_id=run_id, population=population, **expected_args),
             },
         )
 
@@ -1676,7 +1710,7 @@ def _run_workflow_impl(CFG: DataInput, *, environment: dict | None = None):
         return payload.get("rooting") or {}
 
     # The run's inputs do not change while it runs: built once, not on every write.
-    run_state_inputs = _build_run_inputs(CFG, thread_plan=thread_plan)
+    run_state_inputs = _build_run_inputs(CFG, thread_plan=thread_plan, population=population)
     # run_state.json is written whole (temp file, then rename) under this lock, so a
     # per-genome progress update never interleaves with a step boundary's write.
     state_lock = threading.RLock()
@@ -2106,64 +2140,86 @@ def _run_workflow_impl(CFG: DataInput, *, environment: dict | None = None):
                     **_core_alignment_info(core_alignment_result.summary),
                 )
 
-        # fastGEAR lineages and clusters on the ordered core alignment. They come before
-        # Gubbins, which runs per lineage. A fastGEAR failure does not stop the phylogeny:
-        # Gubbins runs once on all genomes (phylo.gubbins_mode auto), the core tree and
-        # Snippy follow, and the run then fails with the fastGEAR error.
+        # Population structure (fastGEAR or FastBAPS, pipeline/PopulationStructure.py) on the
+        # ordered core alignment: the lineages Gubbins runs per and the explorer's clades and
+        # clusters. The step keeps the id fastgear_clades for both methods. A failure does
+        # not stop the phylogeny: Gubbins runs once on all genomes (phylo.gubbins_mode auto),
+        # the core tree and Snippy follow, and the run then fails with the error. Without a
+        # method (the tools image has neither) the step is skipped and Gubbins runs once.
         _check_stop()
         _step_start("fastgear_clades")
+        population_method = population.method
+        population_name = method_label(population_method) if population_method else "population structure"
         fastgear_config = CFG.fastgear_config or configured_fastgear_settings()
-        fastgear_issue = fastgear_reuse_issue(CFG.output, fastgear_config)
         fastgear_failure: Exception | None = None
-        if fastgear_issue is None and not validate_fastgear_outputs(CFG.output, CFG.genomes):
-            _finish_step_success(
-                "fastgear_clades",
-                reason="reused_existing_output",
-                sample_clades=str(CFG.output / "fastgear" / "sample_clades.tsv"),
-                lineage_information=str(CFG.output / "fastgear" / "output" / "lineage_information.txt"),
-                result_mat=str(CFG.output / "fastgear" / "fastgear_res.mat"),
-            )
+        fastgear_error: str | None = None
+        if population_method is None:
+            fastgear_error = population.note
+            logger.warning("Population structure skipped: %s; Gubbins runs once on all genomes.", fastgear_error)
+            _step_end("fastgear_clades", "skipped", reason=fastgear_error, method=None, outputs_validated=False)
         else:
-            logger.info("Running fastGEAR: %s.", fastgear_issue or "existing output is invalid")
-            try:
-                tools_used.add(fastgear_engine(current_container_context() or make_container_context()))
-                fastgear_result = run_fastgear_clades(
-                    CFG.output,
-                    expected_samples=[p.stem for p in CFG.genomes],
-                    logger=logger,
-                    fastgear_config=fastgear_config,
-                )
-            except RunStoppedError:
-                raise
-            except Exception as e:
-                _step_end("fastgear_clades", "failed", error=str(e))
-                fastgear_failure = e
-                logger.error("fastGEAR failed (%s); the phylogeny steps continue without lineages.", e)
+            population_files = {
+                key: str(path) for key, path in population_output_files(CFG.output, population_method).items()
+            }
+            if population_method == "fastbaps":
+                population_issue = fastbaps_reuse_issue(CFG.output, int(phylo_settings["seed"]))
             else:
+                population_issue = fastgear_reuse_issue(CFG.output, fastgear_config)
+            if population_issue is None and not validate_fastgear_outputs(CFG.output, CFG.genomes, population_method):
+                _finish_step_success(
+                    "fastgear_clades", reason="reused_existing_output", method=population_method, **population_files
+                )
+            else:
+                logger.info("Running %s: %s.", population_name, population_issue or "existing output is invalid")
                 try:
-                    _finish_step_success(
-                        "fastgear_clades",
-                        validator_errors=validate_fastgear_outputs(CFG.output, CFG.genomes),
-                        sample_clades=str(fastgear_result.sample_clades_tsv),
-                        lineage_information=str(fastgear_result.lineage_information),
-                        result_mat=str(fastgear_result.result_mat),
-                    )
-                except RuntimeError as e:
+                    if population_method == "fastbaps":
+                        tools_used.add("fastbaps")
+                        run_fastbaps_clades(
+                            CFG.output,
+                            expected_samples=[p.stem for p in CFG.genomes],
+                            logger=logger,
+                            seed=int(phylo_settings["seed"]),
+                        )
+                    else:
+                        tools_used.add(fastgear_engine(current_container_context() or make_container_context()))
+                        run_fastgear_clades(
+                            CFG.output,
+                            expected_samples=[p.stem for p in CFG.genomes],
+                            logger=logger,
+                            fastgear_config=fastgear_config,
+                        )
+                except RunStoppedError:
+                    raise
+                except Exception as e:
+                    _step_end("fastgear_clades", "failed", error=str(e), method=population_method)
                     fastgear_failure = e
+                    logger.error("%s failed (%s); the phylogeny steps continue without lineages.", population_name, e)
+                else:
+                    try:
+                        _finish_step_success(
+                            "fastgear_clades",
+                            validator_errors=validate_fastgear_outputs(CFG.output, CFG.genomes, population_method),
+                            method=population_method,
+                            **population_files,
+                        )
+                    except RuntimeError as e:
+                        fastgear_failure = e
         fastgear_lineages = None
-        fastgear_error = str(fastgear_failure) if fastgear_failure is not None else None
-        if fastgear_failure is None:
+        if fastgear_failure is not None:
+            fastgear_error = str(fastgear_failure)
+        elif population_method is not None:
             try:
                 fastgear_lineages = read_fastgear_lineages(CFG.output)
             except Exception as e:
-                fastgear_error = f"fastgear/sample_clades.tsv is unreadable: {e}"
+                fastgear_error = f"{population_method}/sample_clades.tsv is unreadable: {e}"
 
         # Gubbins per fastGEAR lineage (or once on all genomes) and the masked core alignment.
         _check_stop()
         _step_start("gubbins")
         try:
             gubbins_plan = resolve_gubbins_groups(
-                [p.stem for p in CFG.genomes], phylo_settings, fastgear_lineages, fastgear_error
+                [p.stem for p in CFG.genomes], phylo_settings, fastgear_lineages, fastgear_error,
+                lineage_source=population_name,
             )
         except RuntimeError as e:
             _step_end("gubbins", "failed", error=str(e))
@@ -2175,6 +2231,7 @@ def _run_workflow_impl(CFG: DataInput, *, environment: dict | None = None):
             threads=thread_plan["gubbins"],
             lineages=fastgear_lineages,
             lineage_error=fastgear_error,
+            lineage_source=population_name,
         )
         if gubbins_issue is None and not validate_gubbins_outputs(CFG.output, CFG.genomes):
             gubbins_summary = read_gubbins_summary(CFG.output) or {}
@@ -2198,6 +2255,7 @@ def _run_workflow_impl(CFG: DataInput, *, environment: dict | None = None):
                     threads=thread_plan["gubbins"],
                     lineages=fastgear_lineages,
                     lineage_error=fastgear_error,
+                    lineage_source=population_name,
                 )
             except Exception as e:
                 invalidate_trees(CFG.output, ("core_recomb", "gubbins_final"))
@@ -2293,7 +2351,8 @@ def _run_workflow_impl(CFG: DataInput, *, environment: dict | None = None):
 
         if fastgear_failure is not None:
             # Gubbins, the core tree and Snippy ran on what was available; the run still
-            # fails on fastGEAR, before anything else runs.
+            # fails on the population structure step (fastGEAR or FastBAPS), before
+            # anything else runs.
             raise fastgear_failure
 
         # chewBBACA allele calling
@@ -2506,6 +2565,7 @@ def _run_workflow_impl(CFG: DataInput, *, environment: dict | None = None):
             warnings=run_warnings,
             environment=environment,
             environment_history=environment_history,
+            population=population,
         )
         _write_json(CFG.output / RUN_REPORT_FILENAME, run_report)
         _flush_run_state(status, error_override=error_text, report_written=True)

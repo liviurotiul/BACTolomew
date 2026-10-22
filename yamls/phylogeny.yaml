@@ -2,6 +2,31 @@ name: bactolomew-phylogeny
 channels:
   - conda-forge
   - bioconda
+# Snippy 4.6.0 is installed without its dependencies (x-bactolomew no_deps): its recipe
+# pins vcflib <=1.0.2 and tabixpp 1.1.0, which have no linux-aarch64 build. The list
+# below is the recipe's dependencies with vcflib 1.0.9 (still has the vcf programs snippy
+# calls) and perl-bioperl-core in place of the perl-bioperl bundle (whose aarch64 build
+# pulls samtools 0.1.19); the same on every platform.
 dependencies:
-  - snippy=4.6.0
   - raxml-ng=1.2.2
+  - python=3.12
+  - perl
+  - openjdk>=11
+  - perl-bioperl-core=1.7.8
+  - bwa=0.7.18
+  - minimap2=2.28
+  - seqtk>=1.3
+  - samtools=1.20
+  - bcftools>=1.10
+  - freebayes>=1.3.1
+  - parallel>=20170422
+  - bedtools>=2.28.0
+  - snp-sites>=2.4
+  - samclip>=0.4
+  - any2fasta>=0.4
+  - vcflib=1.0.9
+  - snpeff>=4.3,<=5.0
+  - vt>=0.5772,<2015
+x-bactolomew:
+  no_deps:
+    - snippy=4.6.0

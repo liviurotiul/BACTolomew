@@ -14,6 +14,7 @@ from pipeline.DbCatalog import (
     load_db_catalog_index,
 )
 from pipeline.FastaUtils import collect_fastas, FASTA_EXTS
+from pipeline.PopulationStructure import resume_phylo_overrides
 from pipeline.ToolEnv import (
     _load_app_config,
     configured_assembly_qc_settings,
@@ -47,6 +48,11 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParse
     parser.add_argument("--dmnd_threads", type=int, default=None, help="Threads for DIAMOND (default: --threads)")
     parser.add_argument("--bakta_threads", type=int, default=None, help="Threads for Bakta (default: --threads)")
     parser.add_argument("--window_length", type=int, default=500, help="Window length for clustering (default: 500)")
+    parser.add_argument("--population-method", dest="population_method", default=None,
+                        choices=("auto", "fastgear", "fastbaps"),
+                        help="Population structure method (default: phylo.population_method, fastbaps; "
+                             "auto: FastBAPS when the tools image has it, else fastGEAR; with --resume: "
+                             "the run's method)")
     return parser
 
 
@@ -185,6 +191,10 @@ def workflow_cfg(args, logger) -> DataInput:
             mobsuite_config=mobsuite_config,
             chewbbaca_config=chewbbaca_config,
             assembly_qc_config=assembly_qc_config,
+            phylo_config=(
+                resume_phylo_overrides(output_path, args.population_method) if resume
+                else ({"population_method": args.population_method} if args.population_method else {})
+            ),
         )
     except ValueError as exc:
         logger.error(str(exc))

@@ -17,7 +17,7 @@ the geographic map and the *bla*<sub>OXA-23</sub> gene neighborhoods.
 - **Pipeline** (one command or one button): assembly QC, Bakta annotation, MLST,
   AMRFinderPlus (acquired genes and point mutations), MOB-suite plasmids, gene categories
   from the run's own evidence, Panaroo pangenome, a recombination-aware core-genome
-  phylogeny (core alignment, fastGEAR lineages, Gubbins per lineage, IQ-TREE), a Snippy
+  phylogeny (core alignment, FastBAPS lineages, Gubbins per lineage, IQ-TREE), a Snippy
   SNP tree, chewBBACA cgMLST and searches of the databases you add yourself. Every step is
   resumable and reused only when its inputs match.
 - **Explorer**: dockable, multi-instance panels in one or several windows, all following one
@@ -26,7 +26,10 @@ the geographic map and the *bla*<sub>OXA-23</sub> gene neighborhoods.
   cgMLST MST (compact), Gene neighborhoods and Sequence alignment. Built-in and saved
   layouts (Window > Layouts).
 - **Metadata**: a CSV with a `Sample` column, or "Use run data only" (species, MLST,
-  fastGEAR clades and assembly QC); File > Change Metadata... swaps it later.
+  fastGEAR clades and assembly QC); More > Change Metadata... on the run's card in the
+  run list swaps it later.
+- **Shared runs**: More > Export for Sharing... packs what the explorer needs into one file;
+  Import Run... in the run list opens it on another install, without the pipeline.
 - **Runs on a laptop, a workstation or an HPC node**: the same `bactolomew` command opens
   the window or runs headless, with Docker, Podman (rootful or rootless) or
   Apptainer/Singularity.
@@ -37,7 +40,7 @@ BACTolomew is split into a **thin host layer** and a **fat container layer**:
 
 - **Host (this repo)**: a lightweight Python venv running the PyQt6/WebEngine GUI and the
   in-process pipeline orchestration. No bioinformatics tools are installed on the host.
-- **Container (`bactolomew-tools`)**: a single image carrying every bioinformatics tool.
+- **Container (`liviurotiul/bactolomew` on Docker Hub)**: a single image carrying every bioinformatics tool.
   Each tool call is dispatched as `conda run -n <env>` inside the container, with host
   directories bind-mounted at identical paths so absolute paths resolve unchanged. See
   [`docker/Dockerfile`](docker/Dockerfile).
@@ -58,7 +61,7 @@ The conda environments are defined in [`yamls/`](yamls/), pinned exactly in
 | Typing             | mlst 2.35.0 (PubMLST data of 2025-12-29), chewBBACA 3.5.4 (cgMLST) |
 | Plasmids           | MOB-suite 3.1.9 |
 | Pangenome          | Panaroo 1.8.0 |
-| Core phylogeny     | fastGEAR (Docker Hub `pgcbioinfo/fastgear`, pinned by digest; MATLAB Runtime R2016a), Gubbins 3.4.3, IQ-TREE 2.4.0 |
+| Core phylogeny     | FastBAPS 1.0.8 (the default lineages; fastGEAR from Docker Hub `pgcbioinfo/fastgear`, pinned by digest, MATLAB Runtime R2016a, optional and x86_64 only), Gubbins 3.4.3, IQ-TREE 2.4.0 |
 | SNP phylogeny      | Snippy 4.6.0, RAxML-NG 1.2.2 |
 | Database searches  | DIAMOND 2.2.3 |
 | Sequence alignment | MAFFT 7.526 (explorer) |
@@ -125,6 +128,10 @@ Flags:
 - `--python <path>` (or `PYTHON=`);
 - `--headless`: pipeline only, no Qt (`requirements-pipeline.lock`); `./bactolomew` then
   offers `setup`, `run` and `check`. The only option on glibc 2.28 to 2.33;
+- `--viewer`: the window only, to look at runs someone else made (no container runtime, tools
+  image or databases; about 1 GB for the venv plus about 0.5 GB per shared run of 150 genomes).
+  It writes `{"mode": "viewer"}` to a new `bactolomew_config.json`; `./bactolomew setup` later
+  adds the pipeline;
 - `--no-lock`: the newest versions within `requirements*.txt` instead of the tested lock.
 
 Tested on Ubuntu 22.04 and 24.04, Debian 12, Fedora 42, Rocky 9, openSUSE Leap 15.6, and
@@ -145,7 +152,7 @@ plus the container images and a few per-user files:
 
 ```bash
 rm -rf ~/BACTolomew                                   # or your --dir / checkout (deletes your runs too)
-docker image rm bactolomew-tools:0.2.0                # the tag in bactolomew_config.json; podman alike
+docker image rm liviurotiul/bactolomew:0.3.0              # the tag in bactolomew_config.json; podman alike
 docker image rm pgcbioinfo/fastgear                   # only if setup built the tools image locally
 rm -rf ~/.config/BACTolomew ~/.cache/bactolomew ~/.cache/bactolomew_tiles
 ```
@@ -156,7 +163,15 @@ rm -rf ~/.config/BACTolomew ~/.cache/bactolomew ~/.cache/bactolomew_tiles
 ./bactolomew
 ```
 
-On first launch a **first-time setup** window gets everything ready by itself: the tools image,
+On first launch BACTolomew asks what the install is for: **Full (run analyses)** or **Viewer
+only (open results from others)**. A viewer downloads nothing: open runs shared with you through
+Import Run... in the run list; features that need the tools (such as aligning sequences from a
+gene card, adding cgMLST schemas or databases, starting or resuming a run) are greyed out with
+the reason. Settings > "Set Up Pipeline…" (or `./bactolomew setup`) makes it a full install
+later; `./bactolomew setup --viewer` sets up a viewer without a window, and `./bactolomew check`
+shows the mode.
+
+For a full install, a **first-time setup** window gets everything ready by itself: the tools image,
 the full Bakta database (with its AMRFinderPlus database, which the AMRFinderPlus step uses) and
 the CheckM2 database, then a quick check that makes the `DB/` folder; parts already installed are
 kept. The full Bakta database is a 39.4 GB download that unpacks to 76 GB and takes about 1 to 2
@@ -242,7 +257,7 @@ citations; cite them with the tools above.
 ## Outputs
 
 A run folder (by default under `runs/`) holds one folder per step (`assembly_qc/`, `bakta/`,
-`mlst/`, `amrfinder/`, `mobsuite/`, `evidence/`, `panaroo/`, `core_alignment/`, `fastgear/`,
+`mlst/`, `amrfinder/`, `mobsuite/`, `evidence/`, `panaroo/`, `core_alignment/`, `fastbaps/` or `fastgear/`,
 `gubbins/`, `snippy/`, `chewbbaca/`, `dmnd/`), the trees with their index (`trees/`,
 `trees/trees.json`) and three records: `run_config.json` (settings and the environment: image,
 tool versions, databases), `run_state.json` (step progress, warnings) and `run_report.json`

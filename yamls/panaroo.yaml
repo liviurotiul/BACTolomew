@@ -2,5 +2,33 @@ name: bactolomew-panaroo
 channels:
   - conda-forge
   - bioconda
+# Panaroo 1.8.0 is installed without its dependencies (x-bactolomew no_deps): intbitset
+# has no linux-aarch64 conda build, so it comes from PyPI (manylinux wheels for x86_64
+# and aarch64, pinned with their sha256 in docker/locks/<platform>/panaroo.pip.txt) and
+# the other dependencies of the recipe from conda; the same on every platform.
 dependencies:
-  - panaroo
+  - python=3.11
+  - pip
+  - numpy
+  - biopython
+  - scipy
+  - matplotlib-base
+  - tqdm
+  - scikit-learn
+  - networkx
+  - mafft=7.526
+  - plotly
+  - numba
+  - joblib
+  - mash
+  - cd-hit=4.8.1
+  - dendropy
+  - gffutils
+  - python-edlib
+  - prank=251117
+  - biocode
+  - pip:
+      - intbitset==4.1.2
+x-bactolomew:
+  no_deps:
+    - panaroo=1.8.0

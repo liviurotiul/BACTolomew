@@ -2,7 +2,8 @@
 
 Phase 1 exposes the global compute limits (max CPU threads, max container RAM)
 persisted to bactolomew_config.json's `resources` block via ToolEnv.save_app_config,
-plus the installed cgMLST schemas, with "Add schema…" (import local files, one or
+the default population structure method (`phylo.population_method`), plus the installed
+cgMLST schemas, with "Add schema…" (import local files, one or
 many) and "Download from cgMLST.org…" (pipeline.CgmlstInstall). The Databases page
 lists, adds and removes the marker and compound databases (pipeline.UserDatabases).
 """
@@ -46,9 +47,10 @@ class SettingsDialog(QtWidgets.QDialog):
         self._db_root = db_root  # None: the project's DB folder
         self.setWindowTitle("Settings")
         self.setObjectName("SettingsDialog")
-        self.resize(560, 680)
+        self.resize(560, 840)
         self._cpu_total = detect_budget().cores
         self._build_ui()
+        self._apply_app_mode()
         self._load_current()
 
     # ---- UI ----
@@ -69,6 +71,7 @@ class SettingsDialog(QtWidgets.QDialog):
         general_layout.setContentsMargins(12, 12, 12, 12)
         general_layout.setSpacing(12)
         general_layout.addWidget(self._build_resources_group())
+        general_layout.addWidget(self._build_population_group())
         general_layout.addWidget(self._build_schemas_group(), stretch=1)
         self.pages.addTab(general, "General")
         self.pages.addTab(self._build_databases_page(), "Databases")
@@ -79,6 +82,12 @@ class SettingsDialog(QtWidgets.QDialog):
         btn_row = QtWidgets.QHBoxLayout(footer)
         btn_row.setContentsMargins(0, 12, 0, 0)
         btn_row.setSpacing(8)
+        self.pipeline_btn = QtWidgets.QPushButton("Set Up Pipeline…")
+        self.pipeline_btn.setObjectName("SetUpPipelineButton")
+        self.pipeline_btn.setToolTip("Download the tools image and databases (over 40 GB) to run predictions")
+        self.pipeline_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.pipeline_btn.clicked.connect(self._set_up_pipeline)
+        btn_row.addWidget(self.pipeline_btn)
         btn_row.addStretch(1)
         cancel_btn = QtWidgets.QPushButton("Cancel")
         cancel_btn.setProperty("role", "flat")
@@ -134,6 +143,35 @@ class SettingsDialog(QtWidgets.QDialog):
         )
         return group
 
+    def _build_population_group(self) -> QtWidgets.QGroupBox:
+        group = QtWidgets.QGroupBox("Population structure")
+        box = QtWidgets.QVBoxLayout(group)
+        box.setContentsMargins(14, 22, 14, 14)
+        box.setSpacing(4)
+        self._population_method = "fastbaps"
+        options = [
+            ("fastbaps", "FastBAPS", "FastBAPS clusters: lineage = Level 1, cluster = Level 2."),
+            ("fastgear", "fastGEAR", "fastGEAR lineages and clusters (x86_64 tools images only)."),
+            ("auto", "Automatic", "FastBAPS when the tools image has it, else fastGEAR."),
+        ]
+        self.population_combo = settings_combo(group, options, self._population_method, self._set_population_method)
+        self.population_combo.setObjectName("DefaultPopulationMethodCombo")
+        box.addWidget(_caption("Default method"))
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.population_combo)
+        row.addStretch(1)
+        box.addLayout(row)
+        box.addSpacing(8)
+        box.addWidget(
+            _hint(
+                "A new run offers the choice when the tools image has both; a resumed run keeps its method."
+            )
+        )
+        return group
+
+    def _set_population_method(self, method: str) -> None:
+        self._population_method = str(method)
+
     def _build_schemas_group(self) -> QtWidgets.QGroupBox:
         group = QtWidgets.QGroupBox("cgMLST schemas")
         v = QtWidgets.QVBoxLayout(group)
@@ -146,10 +184,12 @@ class SettingsDialog(QtWidgets.QDialog):
 
         row = QtWidgets.QHBoxLayout()
         add_btn = QtWidgets.QPushButton("Add schema…")
+        self.schema_add_btn = add_btn
         add_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         add_btn.clicked.connect(self._add_schema)
         row.addWidget(add_btn)
         download_btn = QtWidgets.QPushButton("Download from cgMLST.org…")
+        self.schema_download_btn = download_btn
         download_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         download_btn.clicked.connect(self._download_schemas)
         row.addWidget(download_btn)
@@ -195,6 +235,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
         row = QtWidgets.QHBoxLayout()
         add_btn = QtWidgets.QPushButton("Add database…")
+        self.db_add_btn = add_btn
         add_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         add_btn.clicked.connect(self._add_database)
         row.addWidget(add_btn)
@@ -223,6 +264,17 @@ class SettingsDialog(QtWidgets.QDialog):
         self.ram_check.setChecked(ram > 0)
         self.ram_spin.setEnabled(ram > 0)
         self.ram_spin.setValue(ram if ram >= 16 else 16)
+        try:
+            from pipeline.ToolEnv import configured_phylo_settings
+
+            method = str(configured_phylo_settings().get("population_method") or "fastbaps")
+        except ValueError:
+            method = "fastbaps"
+        index = self.population_combo.findData(method)
+        self.population_combo.setCurrentIndex(index if index >= 0 else 0)
+        # Saved only when changed: an unset method stays the default, which an image without
+        # FastBAPS replaces by fastGEAR instead of refusing the run.
+        self._population_loaded = self._population_method
 
         self._reload_schema_list()
         self._reload_databases()
@@ -287,6 +339,23 @@ class SettingsDialog(QtWidgets.QDialog):
                 names.append(child.name)
         return names
 
+    def _apply_app_mode(self) -> None:
+        """A viewer install has no tools image: what builds schemas or databases is off,
+        and Set Up Pipeline… offers the full setup."""
+        from pipeline.ToolEnv import viewer_mode
+
+        viewer = viewer_mode()
+        self.pipeline_btn.setVisible(viewer)
+        for button in (self.schema_add_btn, self.schema_download_btn, self.db_add_btn):
+            button.setEnabled(not viewer)
+            button.setToolTip("Needs the pipeline setup" if viewer else "")
+
+    def _set_up_pipeline(self) -> None:
+        from .first_time_setup import offer_pipeline_setup
+
+        offer_pipeline_setup(self)
+        self._apply_app_mode()
+
     # ---- actions ----
     def _add_schema(self) -> None:
         from .schema_import_dialog import AddSchemaDialog
@@ -336,8 +405,11 @@ class SettingsDialog(QtWidgets.QDialog):
             "max_threads": int(self.threads_spin.value()),
             "max_ram_gb": int(self.ram_spin.value()) if self.ram_check.isChecked() else 0,
         }
+        updates: dict = {"resources": resources}
+        if self._population_method != getattr(self, "_population_loaded", None):
+            updates["phylo"] = {"population_method": self._population_method}
         try:
-            save_app_config({"resources": resources})
+            save_app_config(updates)
         except Exception as exc:  # pragma: no cover - surfaced to the user
             QtWidgets.QMessageBox.critical(self, "Save failed", f"Could not save settings:\n{exc}")
             return

@@ -46,8 +46,20 @@ def step_label(name: str) -> str:
     return STEP_LABELS.get(name) or name.replace("_", " ").capitalize()
 
 
-def planned_steps() -> list[dict[str, str]]:
-    return [{"name": name, "label": label} for name, label in PIPELINE_STEPS]
+# The population structure step keeps its id fastgear_clades for every method (old runs,
+# their run_state.json and resume read it unchanged); its label names the run's method.
+POPULATION_STEP = "fastgear_clades"
+POPULATION_STEP_LABELS = {"fastbaps": "FastBAPS lineages", None: "Population structure"}
+
+
+def planned_steps(population_method: Optional[str] = "fastgear") -> list[dict[str, str]]:
+    """The steps in run order; population_method (fastgear, fastbaps, None for none
+    available) labels the population structure step."""
+    return [
+        {"name": name,
+         "label": POPULATION_STEP_LABELS.get(population_method, label) if name == POPULATION_STEP else label}
+        for name, label in PIPELINE_STEPS
+    ]
 
 
 def report_progress(progress: ProgressCallback, done: int, total: int) -> None:

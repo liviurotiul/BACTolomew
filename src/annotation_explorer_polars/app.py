@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -8,9 +7,7 @@ from urllib import request
 
 from PyQt6 import QtCore, QtWidgets
 
-from pipeline.Setup import collect_setup_missing_paths
-
-from .first_time_setup import FirstTimeSetupDialog
+from .first_time_setup import ensure_app_ready
 from .loading_splash import LoadingSplash
 from .startup_dialog import StartupDialog
 from .theme import apply_application_theme
@@ -35,32 +32,11 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _load_app_config() -> dict:
-    path = project_root() / "bactolomew_config.json"
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _missing_startup_paths(*, dev_mode: bool = False) -> list[Path]:
-    root = project_root()
-    config_path = root / "bactolomew_config.json"
-    config = _load_app_config()
-    missing: list[Path] = [config_path] if not config_path.exists() else []
-    missing.extend(collect_setup_missing_paths(root, config, dev_mode=dev_mode))
-    return missing
-
-
 def _ensure_startup_ready(*, dev_mode: bool = False) -> bool:
-    """First-Time Setup (tool image, databases, config) when anything is missing."""
-    if not _missing_startup_paths(dev_mode=dev_mode):
-        return True
-    dlg = FirstTimeSetupDialog(dev_mode=dev_mode)
-    return dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted
+    """The install is ready to start: without a config, the choice between viewing
+    shared runs and the pipeline setup; First-Time Setup when a full install lacks
+    anything. False when the user cancels."""
+    return ensure_app_ready(dev_mode=dev_mode)
 
 
 def _download_world_geojson(target: Path, url: str) -> Optional[str]:
@@ -211,7 +187,32 @@ def _resolve_metadata_csv(run_id: str, output_dir: Path) -> Optional[object]:
         path = Path(cached_path).expanduser()
         if not _validate_metadata_csv(path):
             return path
+    shared = _shared_metadata(run_id, output_dir)
+    if shared is not None:
+        return shared
     return _choose_metadata(run_id, output_dir)
+
+
+def _shared_metadata(run_id: str, output_dir: Path) -> Optional[object]:
+    """A shared run first opens with the metadata it was shared with: its CSV
+    (``share/metadata.csv``), or the run's own data; remembered like a choice."""
+    from pipeline.RunShare import METADATA_CSV, is_shared_run, read_manifest
+
+    from .cache import RUN_METADATA_SOURCE, save_run_cache
+
+    if not is_shared_run(output_dir):
+        return None
+    csv_path = output_dir / METADATA_CSV
+    if csv_path.is_file() and not _validate_metadata_csv(csv_path):
+        save_run_cache(run_id, csv_path)
+        return csv_path
+    if read_manifest(output_dir).get("metadata") == "run":
+        save_run_cache(run_id, None, run_data_only=True)
+        return RUN_METADATA_SOURCE
+    return None
+
+
+SHARED_TABLES_UNREADABLE = "This shared run has no data tables this version can read."
 
 
 class _RunDataWorker(QtCore.QThread):
@@ -239,7 +240,16 @@ class _RunDataWorker(QtCore.QThread):
         try:
             import pandas as pd
 
-            from .cache import RUN_METADATA_SOURCE, cached_tables_exist, read_cached_tables, write_cached_tables
+            from pipeline.RunShare import is_shared_run
+
+            from .cache import (
+                RUN_METADATA_SOURCE,
+                cached_tables_exist,
+                read_cached_tables,
+                shared_table_paths,
+                shared_tables_status,
+                write_cached_tables,
+            )
             from .data import (
                 attach_assembly_quality_metadata,
                 load_output_data,
@@ -249,7 +259,21 @@ class _RunDataWorker(QtCore.QThread):
             )
             from .model import RunData
 
-            if cached_tables_exist(self._run_id, self._output_dir):
+            if is_shared_run(self._output_dir):
+                # A shared run has nothing to build its tables from: read the ones
+                # it came with (also in another format; the run card warned).
+                if not shared_tables_status(self._output_dir)[0]:
+                    self.failed.emit("Failed to load run", SHARED_TABLES_UNREADABLE)
+                    return
+                self.status.emit("Reading shared data…")
+                try:
+                    ann_df, ref_df, marker_hits_df = read_cached_tables(
+                        self._run_id, shared_table_paths(self._output_dir)
+                    )
+                except Exception:
+                    self.failed.emit("Failed to load run", SHARED_TABLES_UNREADABLE)
+                    return
+            elif cached_tables_exist(self._run_id, self._output_dir):
                 self.status.emit("Reading cached data…")
                 ann_df, ref_df, marker_hits_df = read_cached_tables(self._run_id)
             else:
@@ -336,7 +360,7 @@ def _open_loaded_run(
     app: QtWidgets.QApplication,
     splash: Any,
     state: dict,
-    change_metadata: Optional[Callable[[Any, QtWidgets.QWidget], None]] = None,
+    open_run_list: Optional[Callable[[Any, QtWidgets.QWidget], None]] = None,
 ) -> None:
     """The loader finished: build the run's AppController and its first
     explore window. ``state["app"]`` keeps the controller alive; the app quits
@@ -352,7 +376,7 @@ def _open_loaded_run(
     try:
         # The application object owns the run's data, the windows and the
         # commands; the app quits when its last explore window closes.
-        controller = AppController(data["run_data"], manage_quit=True, change_metadata=change_metadata)
+        controller = AppController(data["run_data"], manage_quit=True, open_run_list=open_run_list)
         win = controller.open_first_window()
     except BaseException as exc:  # never orphan the always-on-top splash
         splash.finish()
@@ -372,9 +396,9 @@ def _open_loaded_run(
 
 
 def _load_run(app: QtWidgets.QApplication, run_id: str, output_dir: Path, metadata_csv: object, *, state: dict) -> None:
-    """Load the run behind the splash and open its windows. File > Change
-    Metadata... closes the run's windows and loads it again with the new
-    metadata (the windows of its session reopen)."""
+    """Load the run behind the splash and open its windows. File > Run List...
+    closes the run's windows (their session is recorded) and shows the run list
+    again; Cancel there quits."""
     splash = LoadingSplash(status="Loading run…")
     splash.start()
 
@@ -389,20 +413,47 @@ def _load_run(app: QtWidgets.QApplication, run_id: str, output_dir: Path, metada
     def _on_failed(title: str, message: str) -> None:
         splash.finish()
         QtWidgets.QMessageBox.critical(None, title, message)
-        app.exit(1)  # the run could not load: a nonzero exit status
+        # Back to the run list; Cancel there quits with a nonzero exit status.
+        state["load_failed"] = True
+        QtCore.QTimer.singleShot(0, lambda: _show_run_list(app, state))
 
-    def _change_metadata(controller: Any, window: QtWidgets.QWidget) -> None:
-        metadata = _choose_metadata(run_id, output_dir, parent=window)
-        if metadata is not None and controller.close_for_reload():
-            _load_run(app, run_id, output_dir, metadata, state=state)
+    def _open_run_list(controller: Any, _window: QtWidgets.QWidget) -> None:
+        if controller.close_for_reload():
+            # After the menu's slot returns: the window it belongs to is closed.
+            QtCore.QTimer.singleShot(0, lambda: _show_run_list(app, state))
 
     def _on_loaded(payload: object) -> None:
-        _open_loaded_run(payload, app=app, splash=splash, state=state, change_metadata=_change_metadata)
+        _open_loaded_run(payload, app=app, splash=splash, state=state, open_run_list=_open_run_list)
 
     worker.status.connect(_on_status)
     worker.failed.connect(_on_failed)
     worker.loaded.connect(_on_loaded)
     worker.start()
+
+
+def _choose_run(*, dev_mode: bool = False) -> Optional[tuple[str, Path, object]]:
+    """The run list (everything about runs lives there), then the run's
+    metadata; None when the user cancels. Cancel in the metadata choice goes
+    back to the run list."""
+    while True:
+        dlg = StartupDialog(dev_mode=dev_mode)
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return None
+        if not dlg.output_dir or not dlg.run_id:
+            return None
+        metadata_csv = _resolve_metadata_csv(dlg.run_id, dlg.output_dir)
+        if metadata_csv is not None:
+            return dlg.run_id, dlg.output_dir, metadata_csv
+
+
+def _show_run_list(app: QtWidgets.QApplication, state: dict) -> None:
+    """File > Run List...: the run's windows are closed; choose a run (Cancel quits)."""
+    choice = _choose_run(dev_mode=bool(state.get("dev_mode")))
+    failed = state.pop("load_failed", False)
+    if choice is None:
+        app.exit(1 if failed else 0)  # 1: the run could not load
+        return
+    _load_run(app, *choice, state=state)
 
 
 def main(*, dev_mode: bool = False) -> int:
@@ -429,18 +480,11 @@ def main(*, dev_mode: bool = False) -> int:
         return 0
     (project_root() / "cache").mkdir(parents=True, exist_ok=True)
     (project_root() / "runs").mkdir(parents=True, exist_ok=True)
-    # Cancel in the metadata choice goes back to the start window.
-    while True:
-        dlg = StartupDialog(dev_mode=dev_mode)
-        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            return 0
-        if not dlg.output_dir or not dlg.run_id:
-            return 0
-        metadata_csv = _resolve_metadata_csv(dlg.run_id, dlg.output_dir)
-        if metadata_csv is not None:
-            break
-
-    _load_run(app, dlg.run_id, dlg.output_dir, metadata_csv, state={})
+    state: dict = {"dev_mode": dev_mode}
+    choice = _choose_run(dev_mode=dev_mode)
+    if choice is None:
+        return 0
+    _load_run(app, *choice, state=state)
     return int(app.exec())
 
 

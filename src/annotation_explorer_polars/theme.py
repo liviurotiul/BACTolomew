@@ -996,7 +996,7 @@ APP_STYLESHEET = Template(
         padding: 2px 8px;
     }
     /* Start window (run selection) and the Run progress window. */
-    QDialog#StartupDialog, QDialog#RunProgressDialog, QDialog#NewRunDialog,
+    QDialog#StartupDialog, QDialog#RunProgressDialog, QDialog#NewRunDialog, QDialog#RunShareDialog,
     QDialog#SettingsDialog, QDialog#AddSchemaDialog, QDialog#AddDatabaseDialog, QDialog#FirstTimeSetupDialog,
     QMessageBox#SetupStopQuestion {
         background: $window;
@@ -1049,6 +1049,37 @@ APP_STYLESHEET = Template(
         color: $text_muted;
         font-size: 11px;
         font-weight: 600;
+    }
+    /* An imported run's "Shared" chip, and a run's compatibility warnings. */
+    QLabel[role="runChip"] {
+        background: $primary_soft;
+        border: 1px solid $focus_soft;
+        border-radius: 8px;
+        color: $primary_ink;
+        font-size: 10px;
+        font-weight: 700;
+        padding: 0px 7px;
+    }
+    QLabel[role="runWarning"] {
+        color: $warning;
+        font-size: 11px;
+        font-weight: 600;
+    }
+    QFrame#RunCard QPushButton#RunMoreButton {
+        padding-right: 24px;
+    }
+    QFrame#RunCard QPushButton#RunMoreButton::menu-indicator {
+        image: url("$chevron_down");
+        subcontrol-origin: border;
+        subcontrol-position: center right;
+        right: 9px;
+        width: 10px;
+        height: 6px;
+    }
+    QFrame#RunDetailsSection {
+        background: $surface;
+        border: 1px solid $border;
+        border-radius: 10px;
     }
     QProgressBar[role="stepBar"] {
         min-height: 6px;

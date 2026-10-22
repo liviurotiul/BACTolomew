@@ -1,33 +1,12 @@
 {
-  "locks_exported_from": {
-    "image": "bactolomew-tools:0.1.0",
-    "image_id": "sha256:57e1e48cff74 (local only, never pushed, so no registry digest)",
-    "image_created": "2026-07-08T11:43:20+03:00",
-    "exported": "2026-10-13, conda list --explicit --md5 inside the image (docker run --rm --network none)",
-    "note": "The image the locks were exported from, not necessarily the image that carries this file: an image built by docker/Dockerfile installs its envs from these locks, so it holds the same packages. The carrying image's own identity is in its OCI labels."
-  },
-  "platform": "linux/amd64",
-  "build_provenance": {
-    "dockerfile_note": "The image was built from an earlier revision of docker/Dockerfile: label title 'contexar-tools', yamls copied to /opt/contexar/yamls, and no libncurses.so.5 symlink layer. The yamls inside the image equal yamls/*.yaml except for the env 'name:' field (contexar-* vs bactolomew-*), which mamba env create -n overrides.",
-    "base_os": "Ubuntu 24.04.4 LTS",
-    "conda": "conda 26.3.2, mamba 2.5.0 (Miniforge3 26.3.2-3)",
-    "base_images": {
-      "condaforge/miniforge3": {
-        "tag_used": "latest (resolved to Miniforge3 26.3.2-3 when built, image created 2026-07-01)",
-        "original_digest": "not recoverable: the base image is no longer present locally and the registry tag 26.3.2-3 was rebuilt on 2026-08-04 with a different miniforge layer",
-        "layers_in_image": [
-          "sha256:538812a4b9bd45adaac2b5e5b967daa6999aa44eb110aa32ae7c69702b906475 (ubuntu 24.04, 2026-04-10)",
-          "sha256:7f6b956bb331cd852caaac5910d6781a74d537bb5fffbe3adc189ede34b14dc3 (miniforge install)"
-        ],
-        "current_digest_26.3.2-3": "sha256:532f6ee7a858b009dc895f8313eb6ed875f05a455ec57d832aa6b4c66e2799b9 (index; linux/amd64 manifest sha256:95195a50e20f7929a31a68ea407cefe117423258639efb6b66f0518e4b86f8ee; same ubuntu layer, different miniforge layer)",
-        "current_digest_latest": "sha256:f752860f77bd417aa4db35be3d2e906fdb740fb80f40755ed651fff9e8873aad (index, created 2026-10-02; linux/amd64 manifest sha256:be01a3e63d4af20d8a9937d1e12fa299d1c572edf601b961180a59c78bd7250d; newer ubuntu layer)"
-      },
-      "pgcbioinfo/fastgear": {
-        "tag_used": "latest",
-        "digest": "sha256:afb299e7fb327129ebf2acc1bcae00e0a54cd6fbe71d114d0a9f1642a2216b79",
-        "note": "present locally and still identical on Docker Hub (single-arch manifest, created 2022-12-01); only its /opt is copied in"
-      }
-    }
+  "locks": {
+    "solved": "2026-10-22",
+    "how": "docker/update_locks.sh: docker/solve_locks.py in a throwaway condaforge/miniforge3 container solves yamls/<env>.yaml for linux-64 and linux-aarch64 (mamba --dry-run --platform, no emulation) with the same package versions on both; docker/check_locks.py checks they match",
+    "platforms": [
+      "linux-64",
+      "linux-aarch64"
+    ],
+    "note": "The versions the locks name. A built image records what it really holds in its own /opt/bactolomew/tool_versions.json (written by docker/verify_image.sh)."
   },
   "fastgear": {
     "env": "none (MATLAB MCR launcher, /opt/run_fastGEAR.sh)",
@@ -39,184 +18,357 @@
   "envs": {
     "bakta": {
       "lock": "bakta.lock",
-      "packages_total": 177,
+      "packages_total": {
+        "linux-64": 180,
+        "linux-aarch64": 180
+      },
       "tools": {
         "bakta": {
           "version": "1.10.4",
-          "build": "pyhdfd78af_1",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "pyhdfd78af_1",
+            "linux-aarch64": "pyhdfd78af_1"
+          }
         },
         "ncbi-amrfinderplus": {
           "version": "4.0.23",
-          "build": "hf69ffd2_0",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "hf69ffd2_0",
+            "linux-aarch64": "h9686939_0"
+          }
         },
         "diamond": {
           "version": "2.1.10",
-          "build": "h5ca1c30_3",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h5ca1c30_3",
+            "linux-aarch64": "h0aa3852_3"
+          }
         },
         "blast": {
           "version": "2.16.0",
-          "build": "h66d330f_5",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h66d330f_5",
+            "linux-aarch64": "h6a93c2d_5"
+          }
         },
         "blast-legacy": {
           "version": "2.2.26",
-          "build": "hf7ff83a_5",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "hf7ff83a_5",
+            "linux-aarch64": "hb7d3a87_5"
+          }
         },
         "pyrodigal": {
           "version": "3.6.3.post1",
-          "build": "py311haab0aaa_1",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "py311haab0aaa_1",
+            "linux-aarch64": "py311he810f1b_1"
+          }
         },
         "pyhmmer": {
           "version": "0.11.0",
-          "build": "py311haab0aaa_1",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "py311haab0aaa_1",
+            "linux-aarch64": "py311he810f1b_1"
+          }
         },
         "hmmer": {
           "version": "3.4",
-          "build": "hb6cb901_4",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h7d74f8d_5",
+            "linux-aarch64": "h9766944_5"
+          }
         },
         "infernal": {
           "version": "1.1.5",
-          "build": "pl5321h7b50bb2_4",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "pl5321h7b50bb2_4",
+            "linux-aarch64": "pl5321h661a7b0_4"
+          }
         },
         "trnascan-se": {
           "version": "2.0.12",
-          "build": "pl5321h7b50bb2_2",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "pl5321h7b50bb2_2",
+            "linux-aarch64": "pl5321h661a7b0_2"
+          }
         },
         "aragorn": {
           "version": "1.2.41",
-          "build": "h7b50bb2_5",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h7b50bb2_5",
+            "linux-aarch64": "h661a7b0_5"
+          }
         },
         "python": {
           "version": "3.11.14",
-          "build": "hd63d673_3_cpython",
-          "channel": "conda-forge"
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "hd63d673_3_cpython",
+            "linux-aarch64": "h91f4b29_3_cpython"
+          }
         }
       },
       "notes": {
         "ncbi-amrfinderplus": "amrfinder runs from this env (ToolEnv maps amrfinder -> bakta). The image ships no AMRFinderPlus database (share/amrfinderplus/data is absent); the pipeline passes --database <bakta_db>/amrfinderplus-db/latest. On this machine bakta_db=/Shared/bakta_db_full/db/db (Bakta DB v5.1 full, 2024-01-19, built with AMRFinderPlus DB 2023-11-15.1); its amrfinderplus-db/latest points to 2025-03-25.1 (updated with amrfinder_update). The DB is data outside the image and is not covered by these locks."
       }
     },
+    "checkm2": {
+      "lock": "checkm2.lock",
+      "packages_total": {
+        "linux-64": 137,
+        "linux-aarch64": 136
+      },
+      "tools": {
+        "checkm2": {
+          "version": "1.1.0",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "pyhdfd78af_2",
+            "linux-aarch64": "pyhdfd78af_2"
+          }
+        },
+        "diamond": {
+          "version": "2.2.8",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "he361c42_0",
+            "linux-aarch64": "he0fd7ac_0"
+          }
+        },
+        "prodigal": {
+          "version": "2.6.3",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h577a1d6_11",
+            "linux-aarch64": "h0cbc5ad_11"
+          }
+        },
+        "tensorflow": {
+          "version": "2.18.0",
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "cpu_py312h69ecde4_2",
+            "linux-aarch64": "cpu_py312h0267799_2"
+          }
+        },
+        "python": {
+          "version": "3.12.15",
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "h5f976f7_1_cpython",
+            "linux-aarch64": "h94ad73b_1_cpython"
+          }
+        }
+      },
+      "notes": {
+        "checkm2": "no CheckM2 database in the image; config assembly_qc.checkm2_database_path points to a host file (uniref100.KO.1.dmnd)."
+      }
+    },
+    "chewbbaca": {
+      "lock": "chewbbaca.lock",
+      "packages_total": {
+        "linux-64": 111,
+        "linux-aarch64": 111
+      },
+      "tools": {
+        "chewbbaca": {
+          "version": "3.5.4",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "pyh106432d_0",
+            "linux-aarch64": "pyh106432d_0"
+          }
+        },
+        "blast": {
+          "version": "2.16.0",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h66d330f_5",
+            "linux-aarch64": "h6a93c2d_5"
+          }
+        },
+        "pyrodigal": {
+          "version": "3.7.1",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "py313h8c92656_1",
+            "linux-aarch64": "py313h7ebdf71_1"
+          }
+        },
+        "mafft": {
+          "version": "7.526",
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "h4bc722e_0",
+            "linux-aarch64": "h68df207_0"
+          }
+        },
+        "fasttree": {
+          "version": "2.2.0",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h7b50bb2_1",
+            "linux-aarch64": "h661a7b0_1"
+          }
+        },
+        "python": {
+          "version": "3.13.16",
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "hf47f18c_102_cp313",
+            "linux-aarch64": "hd0fdf85_102_cp313"
+          }
+        }
+      }
+    },
     "diamond": {
       "lock": "diamond.lock",
-      "packages_total": 7,
+      "packages_total": {
+        "linux-64": 7,
+        "linux-aarch64": 7
+      },
       "tools": {
         "diamond": {
           "version": "2.2.3",
-          "build": "he361c42_0",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "he361c42_0",
+            "linux-aarch64": "he0fd7ac_0"
+          }
         }
       }
     },
-    "mobsuite": {
-      "lock": "mobsuite.lock",
-      "packages_total": 177,
+    "fastbaps": {
+      "lock": "fastbaps.lock",
+      "packages_total": {
+        "linux-64": 150,
+        "linux-aarch64": 148
+      },
       "tools": {
-        "mob_suite": {
-          "version": "3.1.9",
-          "build": "pyhdfd78af_1",
-          "channel": "bioconda"
+        "fastbaps": {
+          "version": "1.0.8",
+          "channel": "https://github.com/gtonkinhill/fastbaps/archive/refs/tags/v1.0.8.tar.gz",
+          "build": {
+            "linux-64": "source sha256:d99ddc232acce92556d4592d54add63db0dcc1d73f3e3c291af3b6ee292159bc",
+            "linux-aarch64": "source sha256:d99ddc232acce92556d4592d54add63db0dcc1d73f3e3c291af3b6ee292159bc"
+          }
         },
-        "blast": {
-          "version": "2.15.0",
-          "build": "pl5321h6f7f691_1",
-          "channel": "bioconda"
+        "genie": {
+          "version": "1.0.7",
+          "channel": "https://cran.r-project.org/src/contrib/genie_1.0.7.tar.gz",
+          "build": {
+            "linux-64": "source sha256:dc1038fc69c961adc28c5c2174e561908ac1f884f2370b480395517ba736c3d9",
+            "linux-aarch64": "source sha256:dc1038fc69c961adc28c5c2174e561908ac1f884f2370b480395517ba736c3d9"
+          }
         },
-        "python": {
-          "version": "3.11.9",
-          "build": "hb806964_0_cpython",
-          "channel": "conda-forge"
-        }
-      }
-    },
-    "phylogeny": {
-      "lock": "phylogeny.lock",
-      "packages_total": 257,
-      "tools": {
-        "snippy": {
-          "version": "4.6.0",
-          "build": "hdfd78af_6",
-          "channel": "bioconda"
+        "r-base": {
+          "version": "4.4.3",
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "h502d0c9_11",
+            "linux-aarch64": "h269e6ae_11"
+          }
         },
-        "raxml-ng": {
-          "version": "1.2.2",
-          "build": "h6747034_2",
-          "channel": "bioconda"
+        "r-matrix": {
+          "version": "1.7_6",
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "r44h0e4624f_0",
+            "linux-aarch64": "r44h9301183_0"
+          }
         },
-        "minimap2": {
-          "version": "2.28",
-          "build": "he4a0461_3",
-          "channel": "bioconda"
+        "r-ape": {
+          "version": "5.8_1",
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "r44h3704496_2",
+            "linux-aarch64": "r44h9e3ff46_2"
+          }
         },
-        "bwa": {
-          "version": "0.7.18",
-          "build": "he4a0461_1",
-          "channel": "bioconda"
+        "r-rcpp": {
+          "version": "1.1.2",
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "r44h3697838_0",
+            "linux-aarch64": "r44h08b74da_0"
+          }
         },
-        "samtools": {
-          "version": "1.20",
-          "build": "h50ea8bc_1",
-          "channel": "bioconda"
-        },
-        "bcftools": {
-          "version": "1.21",
-          "build": "h8b25389_0",
-          "channel": "bioconda"
-        },
-        "freebayes": {
-          "version": "1.3.6",
-          "build": "hb0f3ef8_5",
-          "channel": "bioconda"
-        },
-        "python": {
-          "version": "3.12.3",
-          "build": "hab00c5b_0_cpython",
-          "channel": "conda-forge"
+        "r-rcpparmadillo": {
+          "version": "15.6.2_1",
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "r44h1fcd065_0",
+            "linux-aarch64": "r44h4f966d8_0"
+          }
         }
       }
     },
     "gubbins": {
       "lock": "gubbins.lock",
-      "packages_total": 270,
+      "packages_total": {
+        "linux-64": 272,
+        "linux-aarch64": 270
+      },
       "tools": {
         "gubbins": {
           "version": "3.4.3",
-          "build": "py310hfc0ef84_1",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "py310hfc0ef84_1",
+            "linux-aarch64": "py310h1f8e937_1"
+          }
         },
         "iqtree": {
           "version": "2.4.0",
-          "build": "h503566f_0",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h503566f_0",
+            "linux-aarch64": "h80f0ee0_0"
+          }
         },
         "raxml": {
           "version": "8.2.13",
-          "build": "h7b50bb2_3",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h7b50bb2_3",
+            "linux-aarch64": "h661a7b0_3"
+          }
         },
         "raxml-ng": {
           "version": "2.0.2",
-          "build": "h870a6a7_0",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h870a6a7_0",
+            "linux-aarch64": "h6e375b3_0"
+          }
         },
         "fasttree": {
           "version": "2.2.0",
-          "build": "h7b50bb2_1",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h7b50bb2_1",
+            "linux-aarch64": "h661a7b0_1"
+          }
         },
         "python": {
-          "version": "3.10.20",
-          "build": "h267e890_1_cpython",
-          "channel": "conda-forge"
+          "version": "3.10.22",
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "h267e890_0_cpython",
+            "linux-aarch64": "h4f76b5d_0_cpython"
+          }
         }
       },
       "notes": {
@@ -224,181 +376,288 @@
         "raxml-ng": "gubbins env has raxml-ng 2.0.2; the phylogeny env (the one the pipeline uses for raxml-ng) has 1.2.2."
       }
     },
-    "panaroo": {
-      "lock": "panaroo.lock",
-      "packages_total": 452,
-      "tools": {
-        "panaroo": {
-          "version": "1.8.0",
-          "build": "pyhdfd78af_0",
-          "channel": "bioconda"
-        },
-        "mafft": {
-          "version": "7.526",
-          "build": "h4bc722e_0",
-          "channel": "conda-forge"
-        },
-        "prank": {
-          "version": "251117",
-          "build": "hd63eeec_0",
-          "channel": "bioconda"
-        },
-        "cd-hit": {
-          "version": "4.8.1",
-          "build": "h5ca1c30_13",
-          "channel": "bioconda"
-        },
-        "diamond": {
-          "version": "2.2.3",
-          "build": "he361c42_0",
-          "channel": "bioconda"
-        },
-        "prodigal": {
-          "version": "2.6.3",
-          "build": "h577a1d6_11",
-          "channel": "bioconda"
-        },
-        "python": {
-          "version": "3.11.15",
-          "build": "h7508c33_1_cpython",
-          "channel": "conda-forge"
-        }
-      }
-    },
     "mafft": {
       "lock": "mafft.lock",
-      "packages_total": 15,
+      "packages_total": {
+        "linux-64": 14,
+        "linux-aarch64": 14
+      },
       "tools": {
         "mafft": {
           "version": "7.526",
-          "build": "h4bc722e_0",
-          "channel": "conda-forge"
-        }
-      }
-    },
-    "chewbbaca": {
-      "lock": "chewbbaca.lock",
-      "packages_total": 107,
-      "tools": {
-        "chewbbaca": {
-          "version": "3.5.4",
-          "build": "pyh106432d_0",
-          "channel": "bioconda"
-        },
-        "blast": {
-          "version": "2.17.0",
-          "build": "h66d330f_0",
-          "channel": "bioconda"
-        },
-        "pyrodigal": {
-          "version": "3.7.1",
-          "build": "py313h8c92656_1",
-          "channel": "bioconda"
-        },
-        "mafft": {
-          "version": "7.526",
-          "build": "h4bc722e_0",
-          "channel": "conda-forge"
-        },
-        "fasttree": {
-          "version": "2.2.0",
-          "build": "h7b50bb2_1",
-          "channel": "bioconda"
-        },
-        "python": {
-          "version": "3.13.14",
-          "build": "h6add32d_100_cp313",
-          "channel": "conda-forge"
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "h4bc722e_0",
+            "linux-aarch64": "h68df207_0"
+          }
         }
       }
     },
     "mlst": {
       "lock": "mlst.lock",
-      "packages_total": 259,
+      "packages_total": {
+        "linux-64": 70,
+        "linux-aarch64": 70
+      },
       "tools": {
         "mlst": {
           "version": "2.35.0",
-          "build": "hdfd78af_0",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "hdfd78af_0",
+            "linux-aarch64": "hdfd78af_0"
+          }
         },
         "blast": {
-          "version": "2.17.0",
-          "build": "h66d330f_0",
-          "channel": "bioconda"
+          "version": "2.16.0",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h66d330f_5",
+            "linux-aarch64": "h6a93c2d_5"
+          }
         },
         "any2fasta": {
           "version": "0.8.1",
-          "build": "hdfd78af_0",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "hdfd78af_0",
+            "linux-aarch64": "hdfd78af_0"
+          }
         },
-        "python": {
-          "version": "3.12.13",
-          "build": "hd63d673_0_cpython",
-          "channel": "conda-forge"
+        "perl": {
+          "version": "5.32.1",
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "10_h7cc23a3_perl5",
+            "linux-aarch64": "10_h5bc82ec_perl5"
+          }
         }
       },
       "notes": {
         "mlst": "PubMLST database bundled in the package: /opt/conda/envs/mlst/db/VERSION.txt = 2025-12-29, 162 schemes in db/pubmlst."
       }
     },
-    "assembly_qc": {
-      "lock": "assembly_qc.lock",
-      "packages_total": 257,
+    "mobsuite": {
+      "lock": "mobsuite.lock",
+      "packages_total": {
+        "linux-64": 209,
+        "linux-aarch64": 207
+      },
+      "tools": {
+        "mob_suite": {
+          "version": "3.1.9",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "pyhdfd78af_0",
+            "linux-aarch64": "pyhdfd78af_0"
+          }
+        },
+        "blast": {
+          "version": "2.16.0",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h66d330f_5",
+            "linux-aarch64": "h6a93c2d_5"
+          }
+        },
+        "python": {
+          "version": "3.11.17",
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "h5f976f7_2_cpython",
+            "linux-aarch64": "h94ad73b_2_cpython"
+          }
+        }
+      }
+    },
+    "panaroo": {
+      "lock": "panaroo.lock",
+      "packages_total": {
+        "linux-64": 154,
+        "linux-aarch64": 154
+      },
+      "tools": {
+        "panaroo": {
+          "version": "1.8.0",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "pyhdfd78af_1",
+            "linux-aarch64": "pyhdfd78af_1"
+          }
+        },
+        "intbitset": {
+          "version": "4.1.2",
+          "channel": "pypi",
+          "build": {
+            "linux-64": "wheel",
+            "linux-aarch64": "wheel"
+          }
+        },
+        "mafft": {
+          "version": "7.526",
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "h4bc722e_0",
+            "linux-aarch64": "h68df207_0"
+          }
+        },
+        "prank": {
+          "version": "251117",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "hd63eeec_0",
+            "linux-aarch64": "h4ba1498_0"
+          }
+        },
+        "cd-hit": {
+          "version": "4.8.1",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h5ca1c30_13",
+            "linux-aarch64": "h0aa3852_13"
+          }
+        },
+        "mash": {
+          "version": "2.3",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "hf85e966_11",
+            "linux-aarch64": "h51d0300_11"
+          }
+        },
+        "python": {
+          "version": "3.11.17",
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "h5f976f7_2_cpython",
+            "linux-aarch64": "h94ad73b_2_cpython"
+          }
+        }
+      }
+    },
+    "phylogeny": {
+      "lock": "phylogeny.lock",
+      "packages_total": {
+        "linux-64": 132,
+        "linux-aarch64": 132
+      },
+      "tools": {
+        "snippy": {
+          "version": "4.6.0",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "hdfd78af_6",
+            "linux-aarch64": "hdfd78af_6"
+          }
+        },
+        "raxml-ng": {
+          "version": "1.2.2",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h6747034_2",
+            "linux-aarch64": "h0e14f21_2"
+          }
+        },
+        "vcflib": {
+          "version": "1.0.9",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "hdcf5f25_8",
+            "linux-aarch64": "h7f4e536_8"
+          }
+        },
+        "minimap2": {
+          "version": "2.28",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h577a1d6_4",
+            "linux-aarch64": "h0cbc5ad_4"
+          }
+        },
+        "bwa": {
+          "version": "0.7.18",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h577a1d6_2",
+            "linux-aarch64": "h0cbc5ad_2"
+          }
+        },
+        "samtools": {
+          "version": "1.20",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h50ea8bc_1",
+            "linux-aarch64": "h7a5d460_1"
+          }
+        },
+        "bcftools": {
+          "version": "1.20",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h8b25389_1",
+            "linux-aarch64": "h2862a90_1"
+          }
+        },
+        "freebayes": {
+          "version": "1.3.8",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h6a68c12_1",
+            "linux-aarch64": "h76f4f2e_1"
+          }
+        },
+        "snpeff": {
+          "version": "5.0",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "hdfd78af_3",
+            "linux-aarch64": "hdfd78af_3"
+          }
+        },
+        "python": {
+          "version": "3.12.15",
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "h5f976f7_2_cpython",
+            "linux-aarch64": "h94ad73b_2_cpython"
+          }
+        }
+      }
+    },
+    "quast": {
+      "lock": "quast.lock",
+      "packages_total": {
+        "linux-64": 205,
+        "linux-aarch64": 204
+      },
       "tools": {
         "quast": {
           "version": "5.3.0",
-          "build": "py312pl5321hdcc493e_1",
-          "channel": "bioconda"
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "py313pl5321h5ca1c30_2",
+            "linux-aarch64": "py313pl5321h0aa3852_2"
+          }
         },
-        "checkm2": {
-          "version": "1.1.0",
-          "build": "pyh7e72e81_1",
-          "channel": "bioconda"
-        },
-        "diamond": {
-          "version": "2.1.11",
-          "build": "h5ca1c30_2",
-          "channel": "bioconda"
-        },
-        "prodigal": {
-          "version": "2.6.3",
-          "build": "h577a1d6_11",
-          "channel": "bioconda"
-        },
-        "tensorflow": {
-          "version": "2.17.0",
-          "build": "cpu_py312h69ecde4_3",
-          "channel": "conda-forge"
+        "minimap2": {
+          "version": "2.31",
+          "channel": "bioconda",
+          "build": {
+            "linux-64": "h118bc1c_0",
+            "linux-aarch64": "he84ed4f_0"
+          }
         },
         "python": {
-          "version": "3.12.13",
-          "build": "hd63d673_0_cpython",
-          "channel": "conda-forge"
+          "version": "3.13.16",
+          "channel": "conda-forge",
+          "build": {
+            "linux-64": "hf47f18c_102_cp313",
+            "linux-aarch64": "hd0fdf85_102_cp313"
+          }
         }
       },
       "notes": {
-        "checkm2": "no CheckM2 database in the image; config assembly_qc.checkm2_database_path points to a host file (uniref100.KO.1.dmnd)."
-      }
-    },
-    "base": {
-      "lock": "base.lock",
-      "packages_total": 88,
-      "tools": {
-        "conda": {
-          "version": "26.3.2",
-          "build": "py313h78bf25f_1",
-          "channel": "conda-forge"
-        },
-        "mamba": {
-          "version": "2.5.0",
-          "build": "h9835478_0",
-          "channel": "conda-forge"
-        },
-        "python": {
-          "version": "3.13.13",
-          "build": "h6add32d_100_cp313",
-          "channel": "conda-forge"
-        }
+        "quast": "QUAST and CheckM2 were one env (assembly_qc) before 0.3.0; the pipeline falls back to it in older images."
       }
     }
   }

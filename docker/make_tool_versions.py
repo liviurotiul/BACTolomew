@@ -1,88 +1,152 @@
-"""Write docker/locks/tool_versions.json from `conda list --json` exports of a built image.
+"""Write a tool version summary: from the locks (docker/locks/tool_versions.json) or from
+what an image really holds (/opt/bactolomew/tool_versions.json, at build time).
 
-Usage (called by docker/update_locks.sh):
-    python3 docker/make_tool_versions.py <dir with <env>.json> <tool_versions.json>
-        --image IMAGE --image-id ID --image-created TIME
+Usage:
+    python3 docker/make_tool_versions.py locks <docker/locks> <dest>
+        (docker/update_locks.sh) the main tools of every env, with their version (the same
+        on every platform, see docker/check_locks.py), channel and build per platform;
+    python3 make_tool_versions.py image <locks summary> <dest>
+        (docker/verify_image.sh, inside the image) only the envs installed in
+        /opt/conda/envs, from `conda list --json` (PyPI wheels show as channel pypi), the
+        R packages built from source (<env>.r_source.tsv, installed and version-checked by
+        install_envs.sh) and fastGEAR only when its files are in the image.
 
-The "envs" section is rebuilt from the exports (the main tools of each env with version,
-build and channel); envs that were not exported (an image from docker/Dockerfile.solve
-holds only the envs being changed) keep their existing entry. Hand-written parts of an
-existing file are kept: each env's "notes", "build_provenance" and "fastgear". The image copies this file to
-/opt/bactolomew/tool_versions.json and every run records its "envs" tools as provenance.
+The hand-written "notes" of an env and the "fastgear" section are kept from the existing
+locks summary. Every run records the image's "envs" tools as provenance
+(pipeline.ContainerRuntime: {env: {tool: "version build"}}).
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
 import json
+import os
+import subprocess
 from pathlib import Path
 
+PLATFORMS = ("linux-64", "linux-aarch64")
+DOCKER_PLATFORMS = {"x86_64": "linux/amd64", "aarch64": "linux/arm64"}
 # The tools worth naming per env (the rest of each env is in its lock).
 MAIN_TOOLS = {
     "bakta": ["bakta", "ncbi-amrfinderplus", "diamond", "blast", "blast-legacy", "pyrodigal",
               "pyhmmer", "hmmer", "infernal", "trnascan-se", "aragorn", "python"],
     "diamond": ["diamond"],
     "mobsuite": ["mob_suite", "blast", "python"],
-    "phylogeny": ["snippy", "raxml-ng", "minimap2", "bwa", "samtools", "bcftools", "freebayes", "python"],
+    "phylogeny": ["snippy", "raxml-ng", "vcflib", "minimap2", "bwa", "samtools", "bcftools", "freebayes",
+                  "snpeff", "python"],
     "gubbins": ["gubbins", "iqtree", "raxml", "raxml-ng", "fasttree", "python"],
-    "panaroo": ["panaroo", "mafft", "prank", "cd-hit", "diamond", "prodigal", "python"],
+    "panaroo": ["panaroo", "intbitset", "mafft", "prank", "cd-hit", "mash", "python"],
     "mafft": ["mafft"],
     "chewbbaca": ["chewbbaca", "blast", "pyrodigal", "mafft", "fasttree", "python"],
-    "mlst": ["mlst", "blast", "any2fasta", "python"],
-    "assembly_qc": ["quast", "checkm2", "diamond", "prodigal", "tensorflow", "python"],
-    "base": ["conda", "mamba", "python"],
+    "mlst": ["mlst", "blast", "any2fasta", "perl"],
+    "quast": ["quast", "minimap2", "python"],
+    "checkm2": ["checkm2", "diamond", "prodigal", "tensorflow", "python"],
+    "fastbaps": ["fastbaps", "genie", "r-base", "r-matrix", "r-ape", "r-rcpp", "r-rcpparmadillo"],
+    "base": ["conda", "mamba", "python"],  # the base image's own env (not from a lock)
 }
 
 
-LOCKS_NOTE = (
-    "The image the locks were exported from, not necessarily the image that carries this file: "
-    "an image built by docker/Dockerfile installs its envs from these locks, so it holds the "
-    "same packages. The carrying image's own identity is in its OCI labels."
-)
+def r_sources(path: Path) -> list[dict]:
+    out = []
+    if path.is_file():
+        for line in path.read_text().splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 4:
+                out.append({"name": parts[0], "version": parts[1], "build": f"source sha256:{parts[2]}",
+                            "channel": parts[3]})
+    return out
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("exports", type=Path)
-    ap.add_argument("dest", type=Path)
-    ap.add_argument("--image", required=True)
-    ap.add_argument("--image-id", required=True)
-    ap.add_argument("--image-created", default="")
-    args = ap.parse_args()
+def tools_of(env: str, records: dict[str, dict]) -> dict[str, dict]:
+    names = MAIN_TOOLS.get(env) or sorted(records)
+    return {n: records[n] for n in names if n in records}
 
-    old = json.loads(args.dest.read_text()) if args.dest.is_file() else {}
+
+def from_locks(locks: Path, old: dict) -> dict:
     old_envs = old.get("envs") if isinstance(old.get("envs"), dict) else {}
-    envs: dict[str, dict] = dict(old_envs)
-    for export in sorted(args.exports.glob("*.json")):
-        env = export.stem
-        records = {p["name"]: p for p in json.loads(export.read_text())}
-        names = MAIN_TOOLS.get(env) or sorted(records)
-        tools = {
-            n: {"version": records[n]["version"], "build": records[n]["build_string"],
-                "channel": records[n]["channel"]}
-            for n in names if n in records
-        }
-        entry = {"lock": f"{env}.lock", "packages_total": len(records), "tools": tools}
+    envs: dict[str, dict] = {}
+    names = sorted({p.stem for plat in PLATFORMS for p in (locks / plat).glob("*.json")})
+    for env in names:
+        per_plat = {}
+        for plat in PLATFORMS:
+            path = locks / plat / f"{env}.json"
+            if path.is_file():
+                recs = {p["name"]: p for p in json.loads(path.read_text())}
+                recs.update({r["name"]: r for r in r_sources(locks / plat / f"{env}.r_source.tsv")})
+                pip = locks / plat / f"{env}.pip.txt"
+                for line in pip.read_text().splitlines() if pip.is_file() else []:
+                    name, _, rest = line.partition("==")
+                    recs[name] = {"name": name, "version": rest.split()[0], "build": "wheel", "channel": "pypi"}
+                per_plat[plat] = recs
+        first = next(iter(per_plat.values()))
+        tools = {}
+        for name, rec in tools_of(env, first).items():
+            tools[name] = {"version": rec["version"], "channel": rec["channel"],
+                           "build": {plat: recs[name]["build"] for plat, recs in per_plat.items() if name in recs}}
+        entry = {"lock": f"{env}.lock", "packages_total": {plat: len(r) for plat, r in per_plat.items()},
+                 "tools": tools}
         notes = (old_envs.get(env) or {}).get("notes")
         if notes:
             entry["notes"] = notes
         envs[env] = entry
-
     doc = {
-        "locks_exported_from": {
-            "image": args.image,
-            "image_id": args.image_id,
-            "image_created": args.image_created,
-            "exported": f"{dt.date.today().isoformat()}, conda list --explicit --md5 inside the image "
-                        "(docker run --rm --network none)",
-            "note": LOCKS_NOTE,
+        "locks": {
+            "solved": dt.date.today().isoformat(),
+            "how": "docker/update_locks.sh: docker/solve_locks.py in a throwaway condaforge/miniforge3 "
+                   "container solves yamls/<env>.yaml for linux-64 and linux-aarch64 (mamba --dry-run "
+                   "--platform, no emulation) with the same package versions on both; docker/check_locks.py "
+                   "checks they match",
+            "platforms": list(PLATFORMS),
+            "note": "The versions the locks name. A built image records what it really holds in its own "
+                    "/opt/bactolomew/tool_versions.json (written by docker/verify_image.sh).",
         },
-        "platform": "linux/amd64",
     }
-    for key in ("build_provenance", "fastgear"):
-        if key in old:
-            doc[key] = old[key]
-    doc["envs"] = dict(sorted(envs.items()))
+    if "fastgear" in old:
+        doc["fastgear"] = old["fastgear"]
+    doc["envs"] = envs
+    return doc
+
+
+def from_image(summary: dict) -> dict:
+    sum_envs = summary.get("envs") if isinstance(summary.get("envs"), dict) else {}
+    envs: dict[str, dict] = {}
+    for prefix in [Path("/opt/conda"), *sorted(Path("/opt/conda/envs").iterdir())]:
+        env = "base" if prefix == Path("/opt/conda") else prefix.name
+        if not (prefix / "conda-meta").is_dir():
+            continue
+        res = subprocess.run(["/opt/conda/bin/conda", "list", "--json", "-n", env],
+                             capture_output=True, text=True, check=True)
+        recs = {p["name"]: {"name": p["name"], "version": p["version"], "build": p.get("build_string", ""),
+                            "channel": p.get("channel", "")} for p in json.loads(res.stdout)}
+        recs.update({r["name"]: r for r in r_sources(Path("/opt/bactolomew/locks") / f"{env}.r_source.tsv")})
+        tools = {n: {k: r[k] for k in ("version", "build", "channel")} for n, r in tools_of(env, recs).items()}
+        entry = {"lock": f"{env}.lock" if env != "base" else None, "packages_total": len(recs), "tools": tools}
+        notes = (sum_envs.get(env) or {}).get("notes")
+        if notes:
+            entry["notes"] = notes
+        envs[env] = entry
+    doc = {
+        "platform": DOCKER_PLATFORMS.get(os.uname().machine, os.uname().machine),
+        "written": "at build time by docker/verify_image.sh from the installed envs",
+        "locks": summary.get("locks"),
+    }
+    if Path("/opt/fastGEAR").is_file() and "fastgear" in summary:
+        doc["fastgear"] = summary["fastgear"]
+    doc["envs"] = envs
+    return doc
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("mode", choices=("locks", "image"))
+    ap.add_argument("source", type=Path, help="locks: the docker/locks folder; image: the locks summary")
+    ap.add_argument("dest", type=Path)
+    args = ap.parse_args()
+    if args.mode == "locks":
+        old = json.loads(args.dest.read_text()) if args.dest.is_file() else {}
+        doc = from_locks(args.source, old)
+    else:
+        doc = from_image(json.loads(args.source.read_text()))
     args.dest.write_text(json.dumps(doc, indent=2) + "\n")
 
 

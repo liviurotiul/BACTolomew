@@ -17,7 +17,9 @@ import pandas as pd
 
 from pipeline.AmrFinderWorkflow import MLST_SCHEME_ORGANISMS
 from pipeline.AssemblyQualityWorkflow import load_assembly_quality_summary
-from pipeline.ToolEnv import project_root
+from pipeline.PopulationStructure import sample_clades_path
+from pipeline.RunShare import SCHEME_SPECIES
+from pipeline.ToolEnv import configured_database_dirs, project_root, relocate_db_path
 
 # Columns other than the assembly QC ones (MLSTScheme only when the genomes were typed
 # with different schemes); ST, Clade and Cluster are labels, not numbers.
@@ -60,12 +62,21 @@ def _mlst_rows(output_dir: Path) -> list[Dict[str, str]]:
 
 
 def _scheme_catalog_path(output_dir: Path) -> Path:
+    """The scheme -> species catalog: a shared run's own snapshot, the one the run
+    recorded, the same file in this install's cgMLST folder, else the project's."""
+    shared = output_dir / SCHEME_SPECIES
+    if shared.is_file():
+        return shared
     config = _read_json(output_dir / "run_config.json")
     inputs = config.get("inputs") if isinstance(config, Mapping) else None
     chewbbaca = inputs.get("chewbbaca") if isinstance(inputs, Mapping) else None
     configured = str((chewbbaca or {}).get("catalog_path") or "").strip() if isinstance(chewbbaca, Mapping) else ""
     if configured and Path(configured).expanduser().is_file():
         return Path(configured).expanduser()
+    if configured:
+        relocated = Path(relocate_db_path(configured, configured_database_dirs().get("cgmlst_dir")))
+        if relocated.is_file():
+            return relocated
     return project_root() / "DB" / "cgmlst" / SCHEME_CATALOG_NAME
 
 
@@ -88,10 +99,13 @@ def mlst_scheme_species(output_dir: Path) -> Dict[str, str]:
 
 
 def _fastgear_rows(output_dir: Path) -> Dict[str, tuple[str, str]]:
-    """sample -> (clade, cluster) from fastgear/sample_clades.tsv."""
+    """sample -> (clade, cluster) from the run's sample_clades.tsv (fastgear/ or fastbaps/)."""
     out: Dict[str, tuple[str, str]] = {}
+    path = sample_clades_path(output_dir)
+    if path is None:
+        return out
     try:
-        with (output_dir / "fastgear" / "sample_clades.tsv").open(newline="", encoding="utf-8") as handle:
+        with path.open(newline="", encoding="utf-8") as handle:
             for row in csv.DictReader(handle, delimiter="\t"):
                 sample = _clean(row.get("Sample"))
                 if sample and sample not in out:

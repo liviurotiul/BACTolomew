@@ -1,0 +1,12 @@
+name: bactolomew-checkm2
+channels:
+  - conda-forge
+  - bioconda
+# CheckM2 alone (QUAST is the quast env): TensorFlow 2.18.0, the oldest version built for
+# both linux-64 and linux-aarch64 (0.2.0 had 2.17.0, linux-64 only). scikit-learn 1.6.1:
+# the version CheckM2's pickled MinMaxScaler was saved with (a newer one warns that the
+# model may give invalid results; 0.2.0 had 1.6.1 too).
+dependencies:
+  - checkm2=1.1.0
+  - tensorflow=2.18.0
+  - scikit-learn=1.6.1

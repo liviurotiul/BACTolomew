@@ -12,3 +12,7 @@ dependencies:
   - blast=2.16.0
   - blast-legacy=2.2.26
   - ncbi-amrfinderplus=4.0.23
+  - trnascan-se=2.0.12
+  - hmmer=3.4
+  - infernal=1.1.5
+  - aragorn=1.2.41

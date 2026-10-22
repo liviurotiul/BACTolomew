@@ -23,8 +23,13 @@ REQUIRED_TOOL_ENVS: tuple[str, ...] = (
     "panaroo",
     "chewbbaca",
     "mlst",
-    "assembly_qc",
+    "quast",
+    "checkm2",
 )
+# Envs split from an older env: images and native installs before 0.3.0 hold QUAST and
+# CheckM2 together in `assembly_qc` (from 0.3.0 two envs, as quast 5.3.0 and checkm2
+# 1.1.0 need different Python versions on linux-aarch64).
+LEGACY_TOOL_ENVS = {"quast": "assembly_qc", "checkm2": "assembly_qc"}
 
 DEV_BAKTA_ENV_PREFIX = "/Shared/bakta"
 DEV_BAKTA_DB_PATH = "/Shared/bakta_db_full/db"
@@ -88,6 +93,30 @@ def save_app_config(updates: Mapping[str, Any]) -> dict:
     tmp.write_text(json.dumps(merged, indent=2, sort_keys=True), encoding="utf-8")
     os.replace(tmp, path)  # atomic on POSIX
     return merged
+
+
+# Install mode (config `mode`): "full" runs the pipeline (tools image and databases),
+# "viewer" only opens runs made elsewhere. A config without the key is a full install
+# (installs made before the key existed); no config at all is not set up yet.
+APP_MODE_VIEWER = "viewer"
+APP_MODE_FULL = "full"
+
+
+def configured_app_mode(config: Optional[Mapping[str, Any]] = None) -> str:
+    config = config if isinstance(config, Mapping) else _load_app_config()
+    mode = str(config.get("mode") or "").strip().lower()
+    return APP_MODE_VIEWER if mode == APP_MODE_VIEWER else APP_MODE_FULL
+
+
+def viewer_mode() -> bool:
+    """True on a viewer-only install: features that need the tools or databases are off."""
+    return configured_app_mode() == APP_MODE_VIEWER
+
+
+def set_app_mode(mode: str) -> dict:
+    if mode not in (APP_MODE_VIEWER, APP_MODE_FULL):
+        raise ValueError(f"unknown app mode: {mode}")
+    return save_app_config({"mode": mode})
 
 
 def configured_resources() -> dict[str, int]:
@@ -180,9 +209,9 @@ def _tool_env_key(tool_name: str) -> str:
         "panaroo": "panaroo",
         "chewbbaca": "chewbbaca",
         "mlst": "mlst",
-        "quast": "assembly_qc",
-        "quast.py": "assembly_qc",
-        "checkm2": "assembly_qc",
+        "quast": "quast",
+        "quast.py": "quast",
+        "checkm2": "checkm2",
     }
     return key_map.get(tool_name, tool_name)
 
@@ -193,14 +222,17 @@ def get_tool_env_prefix(tool_name: str) -> Optional[str]:
     env_key = _tool_env_key(tool_name)
     dev_mode = bool(config.get("dev_mode"))
 
+    keys = [env_key, *([LEGACY_TOOL_ENVS[env_key]] if env_key in LEGACY_TOOL_ENVS else [])]
     if isinstance(envs, dict):
-        raw = envs.get(env_key)
-        if isinstance(raw, str) and raw.strip():
-            return raw.strip()
+        for key in keys:
+            raw = envs.get(key)
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
 
-    project_env = project_root() / "envs" / env_key
-    if (project_env / "conda-meta").is_dir():
-        return str(project_env)
+    for key in keys:
+        project_env = project_root() / "envs" / key
+        if (project_env / "conda-meta").is_dir():
+            return str(project_env)
 
     # Dev fallback used by current setup.
     if dev_mode and env_key in {"bakta", "diamond"}:
@@ -218,7 +250,7 @@ def get_tool_env_prefix(tool_name: str) -> Optional[str]:
 # absolute-path command args resolve unchanged inside the container.
 # ---------------------------------------------------------------------------
 
-TOOLS_IMAGE = "bactolomew-tools:0.2.0"
+TOOLS_IMAGE = "liviurotiul/bactolomew:0.3.0"
 DEFAULT_RUNTIME = "native"  # backward-compatible default when config has no `runtime`
 CONTAINER_RUNTIMES = ("docker", "podman", "singularity")  # config `runtime` values besides native
 OCI_RUNTIMES = ("docker", "podman")  # engines that run `<exe> run ... <image> <argv>`
@@ -323,7 +355,7 @@ def image_has_repository_path(image: str) -> bool:
 def podman_image_ref(image: str) -> str:
     """`image` as Podman should name it: a Docker Hub path without a registry host
     (`owner/name:tag`) gets `docker.io/`, since Podman's short-name policy can refuse it;
-    bare local names (`bactolomew-tools:0.2.0`) and qualified references are unchanged."""
+    bare local names (`bactolomew:0.3.0`) and qualified references are unchanged."""
     ref = str(image).strip()
     first, sep, _rest = ref.partition("/")
     if not sep or "." in first or ":" in first or first == "localhost":
@@ -527,6 +559,11 @@ def _singularity_exec_cmd(ctx: ContainerContext, argv: list[str], *, env: Mappin
 def _container_prefix(ctx: ContainerContext, env: str, exe: str, workdir: Optional[str]) -> list[str]:
     wd = str(workdir) if workdir else ctx.default_workdir
     inner = ["conda", "run", "--no-capture-output", "-n", env, exe]
+    legacy = LEGACY_TOOL_ENVS.get(env)
+    if legacy:
+        # An image before 0.3.0 has the tool in the older env: pick the env in the image.
+        inner = ["sh", "-c", f'e={env}; [ -d /opt/conda/envs/{env} ] || e={legacy}; '
+                 'exec conda run --no-capture-output -n "$e" "$@"', "sh", exe]
     if ctx.runtime == "singularity":
         return _singularity_exec_cmd(ctx, inner, env={}, binds=ctx.bind_roots, workdir=wd)
     return _oci_run_cmd(ctx, ctx.image, inner, env={"HOME": ctx.home_dir}, binds=ctx.bind_roots, workdir=wd)
@@ -748,7 +785,11 @@ PHYLO_DEFAULTS: dict[str, Any] = {
     "outgroup": "",                      # sample name or comma list; empty = midpoint rooting
     "seed": 1,                           # Gubbins and IQ-TREE seed
     "gubbins_iterations": 20,
-    "gubbins_mode": "auto",              # auto (per fastGEAR lineage when >= 2) | single | per_lineage
+    # Population structure (step fastgear_clades, pipeline/PopulationStructure.py):
+    # fastbaps | fastgear | auto (FastBAPS when the tools image has it, else fastGEAR). Left
+    # unset, the default acts as auto on an image without FastBAPS; set, it is required.
+    "population_method": "fastbaps",
+    "gubbins_mode": "auto",              # auto (per lineage when >= 2) | single | per_lineage
     "gubbins_min_lineage_size": 5,       # lineages with fewer genomes are not run (left unmasked)
     "gubbins_converge_method": "recombination",  # stop when the recombination calls repeat
     "gubbins_filter_percentage": 25.0,
@@ -769,6 +810,7 @@ _PHYLO_CHOICES: dict[str, tuple[str, ...]] = {
     "gubbins_converge_method": ("weighted_robinson_foulds", "robinson_foulds", "recombination"),
     "gubbins_tree_builder": ("raxml", "raxmlng", "iqtree", "iqtree-fast", "fasttree", "hybrid", "rapidnj", "veryfasttree"),
     "gubbins_mode": ("auto", "single", "per_lineage"),
+    "population_method": ("auto", "fastgear", "fastbaps"),
 }
 
 

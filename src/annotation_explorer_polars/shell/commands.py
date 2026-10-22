@@ -35,8 +35,7 @@ LAYOUT_APPLY = "layout.apply"
 LAYOUT_SET_DEFAULT = "layout.set_default"
 LAYOUT_CLEAR_DEFAULT = "layout.clear_default"
 LAYOUT_DELETE = "layout.delete"
-APP_PREFERENCES = "app.preferences"
-APP_CHANGE_METADATA = "app.change_metadata"
+APP_RUN_LIST = "app.run_list"
 WINDOW_NEW = "window.new"
 WINDOW_DUPLICATE = "window.duplicate"
 WINDOW_OPEN_SUBSET = "window.open_subset"
@@ -186,16 +185,9 @@ def register_explore_commands(registry: CommandRegistry, controller: "AppControl
         del window  # user layouts are shared by every window
         return controller.layouts.delete_user_layout(layout)
 
-    def preferences(window: Any) -> None:
-        from ..settings_dialog import SettingsDialog
-
-        # Settings are read from bactolomew_config.json when next used, so
-        # nothing in the window needs a refresh after the dialog closes.
-        SettingsDialog(window).exec()
-
-    def change_metadata(window: Any) -> None:
-        # The run's metadata CSV (or its own data); the run then loads again.
-        controller.change_metadata(window)
+    def run_list(window: Any) -> None:
+        # Close this run's windows and choose a run in the run list.
+        controller.open_run_list(window)
 
     def new_window(window: Any) -> Any:
         # A clean rail and the default layout (plan 3.10).
@@ -236,8 +228,7 @@ def register_explore_commands(registry: CommandRegistry, controller: "AppControl
     registry.register(LAYOUT_SET_DEFAULT, set_default_layout, "Set as default for new windows")
     registry.register(LAYOUT_CLEAR_DEFAULT, clear_default_layout, "Use Classic for new windows")
     registry.register(LAYOUT_DELETE, delete_layout, "Delete saved layout")
-    registry.register(APP_PREFERENCES, preferences, "Preferences")
-    registry.register(APP_CHANGE_METADATA, change_metadata, "Change metadata")
+    registry.register(APP_RUN_LIST, run_list, "Run list")
     registry.register(WINDOW_NEW, new_window, "New explore window")
     registry.register(WINDOW_DUPLICATE, duplicate_window, "Duplicate window")
     registry.register(WINDOW_OPEN_SUBSET, open_subset_window, "Open in new explore window")

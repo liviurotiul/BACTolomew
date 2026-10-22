@@ -442,7 +442,7 @@ class AppControllerTests(_RealWindowCase):
         for name in (
             "info.open_sample", "info.open_annotation", "panel.open", "panel.reopen_closed",
             "panel.open_neighbourhood", "window.open_neighbourhood", "panel.open_alignment", "filter.set_subset",
-            "filter.clear_subset", "nav.show_contig", "layout.reset", "app.preferences",
+            "filter.clear_subset", "nav.show_contig", "layout.reset", "app.run_list",
         ):
             self.assertTrue(controller.commands.has(name), name)
 
@@ -699,25 +699,24 @@ class InfoCardTests(_RealWindowCase):
 
 
 class ShellMenuTests(_RealWindowCase):
-    def test_edit_preferences_opens_the_settings_dialog(self) -> None:
-        win = self._window()
+    def test_file_run_list_is_the_only_run_action_and_returns_to_the_run_list(self) -> None:
+        # Everything about runs (metadata, sharing, details, settings) lives in the
+        # run list: the explore window keeps only the way back to it.
+        opened: List[Any] = []
+        controller = AppController(self._run_data(), open_run_list=lambda c, w: opened.append((c, w)))
+        win = controller.open_first_window()
+        self.windows.append(win)
+        self._settle(win)
         titles = [a.text() for a in win.menuBar().actions()]
-        self.assertEqual(titles[:2], ["File", "Edit"])
+        self.assertEqual(titles[0], "File")
+        self.assertNotIn("Edit", titles)
         self.assertEqual(titles[-1], "Window")
-        edit = win.menuBar().actions()[1].menu()
-        preferences = next(a for a in edit.actions() if a.text() == "Preferences...")
-        self.assertTrue(preferences.shortcut().isEmpty())
-        from annotation_explorer_polars import settings_dialog
-
-        parents: List[Any] = []
-
-        def fake_exec(dialog: Any) -> int:
-            parents.append(dialog.parent())
-            return 0
-
-        with mock.patch.object(settings_dialog.SettingsDialog, "exec", fake_exec):
-            preferences.trigger()
-        self.assertEqual(parents, [win])
+        texts = [a.text() for a in win._file_menu.actions() if a.text()]
+        self.assertEqual(texts, ["Run List...", "Close Window", "Quit"])
+        run_list = next(a for a in win._file_menu.actions() if a.objectName() == "RunListAction")
+        self.assertTrue(run_list.shortcut().isEmpty())
+        run_list.trigger()
+        self.assertEqual(opened, [(controller, win)])
 
     def test_window_menu_lists_this_window_and_its_cards(self) -> None:
         win = self._window()
@@ -735,7 +734,7 @@ class ShellMenuTests(_RealWindowCase):
         self.assertEqual(texts, head + ["Explore windows", win.windowTitle(), "", "Info cards", "Sample card: S3"])
         shortcuts = {a.text(): a.shortcut().toString() for a in menu.actions() if not a.shortcut().isEmpty()}
         self.assertEqual(shortcuts, {"New Panel...": "Ctrl+Shift+P"})
-        for action in win._edit_menu.actions():
+        for action in win._file_menu.actions():
             self.assertTrue(action.shortcut().isEmpty())
 
 

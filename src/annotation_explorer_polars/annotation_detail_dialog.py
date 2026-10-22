@@ -709,6 +709,22 @@ class AlignmentView(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "Alignment", f"Could not save alignment: {exc}")
 
 
+ALIGN_NEEDS_TOOLS_TIP = "Needs the pipeline setup, or mafft installed"
+
+
+def find_aligner() -> Optional[str]:
+    """The aligner the gene card uses: mafft from the tools image on a container setup,
+    else one on PATH. A viewer install has no tools image, so only one on PATH."""
+    from pipeline.ToolEnv import runtime_is_container, viewer_mode
+
+    if not viewer_mode() and runtime_is_container():
+        return "mafft"  # provided by the tools image
+    for cmd in ["mafft", "muscle", "clustalo"]:
+        if shutil.which(cmd):
+            return cmd
+    return None
+
+
 class GeneCardAlignmentDialog(QtWidgets.QDialog):
     """The gene card's alignment parameter form (attached to the card). The
     result goes to ``on_result(alignment_text, status_text)``; the card shows
@@ -819,14 +835,7 @@ class GeneCardAlignmentDialog(QtWidgets.QDialog):
         return out
 
     def _find_aligner(self) -> Optional[str]:
-        from pipeline.ToolEnv import runtime_is_container
-
-        if runtime_is_container():
-            return "mafft"  # provided by the tools image
-        for cmd in ["mafft", "muscle", "clustalo"]:
-            if shutil.which(cmd):
-                return cmd
-        return None
+        return find_aligner()
 
     def _perform_alignment(self, records: List[Tuple[str, str]]) -> Tuple[str, str]:
         tmpdir = Path(tempfile.mkdtemp(prefix="gene_card_align_"))
@@ -843,9 +852,10 @@ class GeneCardAlignmentDialog(QtWidgets.QDialog):
 
         try:
             if aligner == "mafft":
-                from pipeline.ToolEnv import gui_tool_cmd
+                from pipeline.ToolEnv import gui_tool_cmd, viewer_mode
 
-                cmd = [*gui_tool_cmd("mafft", "mafft", mount_paths=[str(in_path.parent)]), "--auto", str(in_path)]
+                base = ["mafft"] if viewer_mode() else gui_tool_cmd("mafft", "mafft", mount_paths=[str(in_path.parent)])
+                cmd = [*base, "--auto", str(in_path)]
                 res = subprocess.run(cmd, capture_output=True, text=True)
                 if res.returncode == 0 and res.stdout.strip():
                     return res.stdout, "Alignment completed with mafft."
@@ -1509,6 +1519,9 @@ class AnnotationDetailDialog(InfoWindow):
         """The actions need an owner explore window to show their results in."""
         enabled = self.can_run_commands()
         tip_off = "Open this card from an explore window to use its actions"
+        from pipeline.ToolEnv import viewer_mode
+
+        no_aligner = viewer_mode() and find_aligner() is None
         for button, tip_on in (
             (
                 getattr(self, "_context_button", None),
@@ -1518,6 +1531,10 @@ class AnnotationDetailDialog(InfoWindow):
             (getattr(self, "_align_button", None), "Align this protein with matching available sequences"),
         ):
             if button is None:
+                continue
+            if no_aligner and button is getattr(self, "_align_button", None):
+                button.setEnabled(False)
+                button.setToolTip(ALIGN_NEEDS_TOOLS_TIP)
                 continue
             button.setEnabled(enabled)
             button.setToolTip(tip_on if enabled else tip_off)

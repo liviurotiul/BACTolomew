@@ -3,5 +3,9 @@ channels:
   - conda-forge
   - bioconda
 dependencies:
-  - gubbins
-  - fasttree
+  - gubbins=3.4.3
+  - fasttree=2.2.0
+  - iqtree=2.4.0
+  - raxml=8.2.13
+  - raxml-ng=2.0.2
+  - python=3.10

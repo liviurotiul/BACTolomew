@@ -6,6 +6,7 @@ import socket
 from pathlib import Path
 from typing import Optional, Sequence
 
+from pipeline.RunShare import RUN_FILES, is_shared_run, rebase_recorded_path, recorded_root
 from pipeline.RunValidation import skippable_steps
 
 from .constants import RUN_LOCK_FILENAME, RUN_REPORT_FILENAME, RUN_STATE_FILENAME
@@ -66,6 +67,7 @@ _PENDING_LABELS = {
     "DIAMOND loci hits": "reference-locus hits",
     "Panaroo": "Panaroo",
     "fastGEAR": "fastGEAR clades",
+    "FastBAPS": "FastBAPS clades",
     "chewBBACA": "chewBBACA",
     "MLST": "MLST",
     "MOB-suite": "MOB-suite",
@@ -179,7 +181,12 @@ def _required_step_validation_errors(report: dict, run_cfg: dict | None) -> list
     # A search skipped because none of its databases was installed is not incomplete.
     skippable = skippable_steps(run_cfg)
 
+    inputs = run_cfg.get("inputs") if isinstance(run_cfg, dict) else None
+    population = inputs.get("population_structure") if isinstance(inputs, dict) else None
+    fastbaps = isinstance(population, dict) and population.get("method") == "fastbaps"
     for step_name, label in _REQUIRED_STEP_LABELS.items():
+        if step_name == "fastgear_clades" and fastbaps:
+            label = "FastBAPS clades"
         step = steps.get(step_name) if isinstance(steps, dict) else None
         if not isinstance(step, dict):
             missing.append(label)
@@ -322,6 +329,10 @@ def _should_expect_fastgear(output_dir: Path, expected_files: Sequence[Path]) ->
     inputs = run_cfg.get("inputs")
     if not isinstance(inputs, dict):
         return False
+    if inputs.get("population_structure") is not None:
+        # A run that records its population method (fastGEAR, FastBAPS or none) lists
+        # that method's files itself.
+        return False
     return _run_uses_panaroo(output_dir, expected_files)
 
 
@@ -342,6 +353,11 @@ def _should_expect_gubbins(output_dir: Path, expected_files: Sequence[Path]) -> 
 
 
 def resolve_expected_files(output_dir: Path) -> list[Path]:
+    output_dir = Path(output_dir)
+    if is_shared_run(output_dir):
+        # A shared run expects only its run files: the compatibility check reports
+        # the package's other files, as warnings that never block opening it.
+        return [output_dir / name for name in RUN_FILES]
     expected_path = output_dir / "expected_outputs.json"
     if not expected_path.exists():
         return []
@@ -353,11 +369,12 @@ def resolve_expected_files(output_dir: Path) -> list[Path]:
     if not isinstance(files, list) or not files:
         return []
 
+    # Paths recorded under the folder the run was made in follow the run when
+    # it was moved or copied.
+    made_in = data.get("output_dir") or recorded_root(output_dir)
     resolved: list[Path] = []
     for raw in files:
-        path = Path(raw)
-        if not path.is_absolute():
-            path = output_dir / path
+        path = rebase_recorded_path(raw, made_in, output_dir)
         path_str = str(path)
         if any(segment in path_str for segment in _IGNORED_LEGACY_SEGMENTS):
             continue
@@ -401,6 +418,8 @@ def classify_expected_path(path: Path) -> Optional[str]:
         return "Phylogeny"
     if "/fastgear/" in s:
         return "fastGEAR"
+    if "/fastbaps/" in s:
+        return "FastBAPS"
     if "/chewbbaca/out/" in s:
         return "chewBBACA"
     if "/mlst/" in s:
@@ -443,6 +462,8 @@ def summarize_pending_outputs(output_dir: Path, expected_files: Sequence[Path]) 
     labels = [_PENDING_LABELS.get(group, group) for group in missing_groups]
     if len(labels) == 1 and labels[0] == "fastGEAR clades":
         return "fastGEAR not yet run. Click Resume to run it."
+    if len(labels) == 1 and labels[0] == "FastBAPS clades":
+        return "FastBAPS not yet run. Click Resume to run it."
     if len(labels) == 1 and labels[0] == "chewBBACA":
         return "chewBBACA not yet run. Click Resume to run it."
     if len(labels) == 1 and labels[0] == "MLST":

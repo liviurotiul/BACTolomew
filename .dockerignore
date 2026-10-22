@@ -2,8 +2,11 @@
 # Dockerfile copies. Everything else (runs/, DB/, envs/, cache/, .venv/, ...) stays out.
 *
 !yamls/*.yaml
-!docker/locks/*.lock
+!docker/locks/linux-64/*
+!docker/locks/linux-aarch64/*
 !docker/locks/tool_versions.json
-!docker/install_envs.sh
 !docker/locks/mobsuite_db.sha256
+!docker/install_envs.sh
+!docker/install_optional_envs.sh
 !docker/verify_image.sh
+!docker/make_tool_versions.py

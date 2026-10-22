@@ -27,6 +27,8 @@ from typing import Any, Callable, Dict, Hashable, List, Mapping, Optional, Seque
 
 import pandas as pd
 
+from pipeline.PopulationStructure import run_population_label
+
 from ..cgmlst_graph_data import _find_chewbbaca_out
 from ..panaroo_data import (
     _find_fastgear_sample_clades,
@@ -570,7 +572,13 @@ class PanData:
         return self._cached("panaroo_out", lambda: _find_panaroo_out(self._output_dir))
 
     def fastgear_clades_path(self) -> Optional[Path]:
+        """The run's sample_clades.tsv (fastgear/, or fastbaps/ for a FastBAPS run)."""
         return self._cached("fastgear", lambda: _find_fastgear_sample_clades(self._output_dir))
+
+    def population_label(self) -> str:
+        """The method that found the run's clades and clusters, as the legends name it:
+        fastGEAR (every run before FastBAPS) or FastBAPS."""
+        return self._cached("population_label", lambda: run_population_label(self._output_dir)) or "fastGEAR"
 
     def chewbbaca_out(self) -> Optional[Path]:
         return self._cached("chewbbaca", lambda: _find_chewbbaca_out(self._output_dir))

@@ -10,6 +10,8 @@ from typing import Dict, List, Mapping, Optional, Sequence, Set, Tuple
 import numpy as np
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from pipeline.PopulationStructure import run_population_label
+
 from .cgmlst_graph_data import (
     _CHEWBBACA_ALLELES_FILENAME,
     MstEdgeScale,
@@ -1094,6 +1096,8 @@ class CgmlstForceGraphView(QtWidgets.QWidget):
         super().__init__(parent)
         _apply_analysis_panel_style(self)
         self._output_dir = Path(output_dir)
+        # The method that found the run's clades (fastGEAR, or FastBAPS for a run made with it).
+        self._population_name = run_population_label(self._output_dir)
         _log_view_event(f"created cgMLST MST view for {self._output_dir}")
         self._reference_sample = str(reference_sample or "").strip()
         self._sample_filter: Optional[set[str]] = None
@@ -1408,7 +1412,7 @@ class CgmlstForceGraphView(QtWidgets.QWidget):
         _log_view_event(
             f"cgMLST MST | samples: {len(payload.sample_labels)} | loci: {payload.n_loci} | "
             f"MST edges: {len(payload.edges)} | mean pairwise allele distance: {payload.mean_pairwise_distance:.2f} | "
-            f"fastGEAR clades: {lineage_count} | duplicate cgMLST profiles: {payload.duplicate_profile_groups}"
+            f"{self._population_name} clades: {lineage_count} | duplicate cgMLST profiles: {payload.duplicate_profile_groups}"
         )
         self._info.clear()
         self._info.setVisible(False)

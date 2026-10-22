@@ -129,6 +129,50 @@ class SetupJobTest(unittest.TestCase):
         self.assertEqual(set(self._states(job).values()), {"done"})
 
 
+class ViewerModeTest(unittest.TestCase):
+    """A viewer install opens runs made elsewhere: it needs no tools image or databases,
+    and choosing it on the first start writes the mode without starting the setup."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def test_viewer_config_asks_for_no_image_or_databases(self) -> None:
+        with mock.patch.object(CR, "runtime_status", return_value=CR.RuntimeStatus("docker", False)):
+            full = fts.collect_setup_missing_paths(self.root, {"runtime": "docker"})
+            viewer = fts.collect_setup_missing_paths(self.root, {"runtime": "docker", "mode": "viewer"})
+        self.assertIn(self.root / fts.BAKTA_DB_DIRNAME, full)
+        self.assertEqual(set(viewer), {self.root / "runs", self.root / "cache"})
+        fts.write_viewer_config(self.root)
+        config = json.loads((self.root / "bactolomew_config.json").read_text())
+        self.assertEqual(config["mode"], "viewer")
+        self.assertEqual(fts.collect_setup_missing_paths(self.root, config), [])
+
+    def test_choosing_viewer_on_first_start_writes_the_mode_and_starts_no_setup(self) -> None:
+        from _qt_test_env import isolate_qt_settings
+
+        isolate_qt_settings()
+        from PyQt6 import QtWidgets
+
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        self.assertIsNotNone(app)
+        from annotation_explorer_polars import first_time_setup as gui
+
+        def choose_viewer(dialog):
+            dialog.cards[gui.CHOICE_VIEWER].clicked.emit()
+            return QtWidgets.QDialog.DialogCode.Accepted
+
+        with mock.patch.object(gui.SetupChoiceDialog, "exec", choose_viewer), \
+                mock.patch.object(gui, "FirstTimeSetupDialog") as setup:
+            self.assertTrue(gui.ensure_app_ready(root=self.root))
+            self.assertTrue(gui.ensure_app_ready(root=self.root))  # the second start asks nothing
+        setup.assert_not_called()
+        config = json.loads((self.root / "bactolomew_config.json").read_text())
+        self.assertEqual(config["mode"], "viewer")
+        self.assertTrue((self.root / "runs").is_dir())
+
+
 class StopStreamTest(unittest.TestCase):
     def test_stop_ends_a_child_that_ignores_sigterm(self) -> None:
         """`conda run` (or docker) dies on SIGTERM but the tool it started ignores it: the

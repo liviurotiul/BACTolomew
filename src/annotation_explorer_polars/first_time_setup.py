@@ -348,3 +348,214 @@ class FirstTimeSetupDialog(QtWidgets.QDialog):
         self.status.setText("Stopping...")
         self.cancel_btn.setEnabled(False)
         self.job.cancel()
+
+
+# --------------------------------------------------------------------------- #
+# Full install or viewer only, and the way from a viewer install to the pipeline
+# --------------------------------------------------------------------------- #
+CHOICE_FULL = "full"
+CHOICE_VIEWER = "viewer"
+
+PIPELINE_NEEDED_TIP = "Needs the pipeline setup"
+
+
+class _ChoiceCard(QtWidgets.QFrame):
+    """One option in the run card style; a click selects it, a double click chooses it."""
+
+    clicked = QtCore.pyqtSignal()
+    activated = QtCore.pyqtSignal()
+
+    def __init__(self, title: str, meta: str, text: str, parent: Optional[QtWidgets.QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("RunCard")
+        self.setProperty("selected", False)
+        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(4)
+        title_label = QtWidgets.QLabel(title)
+        title_label.setProperty("role", "runTitle")
+        layout.addWidget(title_label)
+        meta_label = QtWidgets.QLabel(meta)
+        meta_label.setProperty("role", "runMeta")
+        layout.addWidget(meta_label)
+        body = QtWidgets.QLabel(text)
+        body.setProperty("role", "runStep")
+        body.setWordWrap(True)
+        layout.addSpacing(2)
+        layout.addWidget(body)
+
+    def set_selected(self, selected: bool) -> None:
+        self.setProperty("selected", bool(selected))
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802 - Qt override
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802 - Qt override
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self.activated.emit()
+        super().mouseDoubleClickEvent(event)
+
+
+class SetupChoiceDialog(QtWidgets.QDialog):
+    """The first start without a config: a full install (tools image and databases) or a
+    viewer that only opens runs made elsewhere. `choice` is CHOICE_FULL or CHOICE_VIEWER."""
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("SetupChoiceDialog")
+        self.setWindowTitle("First-Time Setup")
+        self.resize(540, 0)
+        self.choice = CHOICE_FULL
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 14)
+        layout.setSpacing(10)
+        layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
+
+        title = QtWidgets.QLabel("First-Time Setup")
+        title.setProperty("role", "dialogTitle")
+        layout.addWidget(title)
+        hint = QtWidgets.QLabel("Choose what this install does. A viewer can set up the pipeline later.")
+        hint.setProperty("role", "muted")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        layout.addSpacing(4)
+
+        self.cards = {
+            CHOICE_FULL: _ChoiceCard(
+                "Full (run analyses)",
+                "Tools image and databases, over 40 GB",
+                "Run predictions on your genomes and open any run. Setup downloads the tools image "
+                "and the Bakta and CheckM2 databases (about 125 GB free while they unpack).",
+            ),
+            CHOICE_VIEWER: _ChoiceCard(
+                "Viewer only (open results from others)",
+                "No downloads",
+                "Open runs shared with you (Import Run... in the run list) and explore every view. "
+                "Settings can set up the pipeline later.",
+            ),
+        }
+        for key, card in self.cards.items():
+            card.setAccessibleName(key)
+            card.clicked.connect(lambda key=key: self._select(key))
+            card.activated.connect(lambda key=key: (self._select(key), self.accept()))
+            layout.addWidget(card)
+        self._select(CHOICE_FULL)
+
+        layout.addStretch(0)
+        footer = QtWidgets.QFrame()
+        footer.setObjectName("ProgressFooter")
+        buttons = QtWidgets.QHBoxLayout(footer)
+        buttons.setContentsMargins(0, 10, 0, 0)
+        buttons.setSpacing(8)
+        buttons.addStretch(1)
+        cancel = QtWidgets.QPushButton("Cancel")
+        cancel.setProperty("role", "flat")
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        self.continue_btn = QtWidgets.QPushButton("Continue")
+        self.continue_btn.setObjectName("SetupChoiceContinue")
+        self.continue_btn.setProperty("role", "primary")
+        self.continue_btn.setDefault(True)
+        self.continue_btn.clicked.connect(self.accept)
+        buttons.addWidget(self.continue_btn)
+        layout.addWidget(footer)
+
+    def _select(self, key: str) -> None:
+        self.choice = key
+        for name, card in self.cards.items():
+            card.set_selected(name == key)
+
+
+def _root_config(root: Path) -> dict:
+    from pipeline.Setup import _read_config
+
+    return _read_config(root)
+
+
+def _pick_runtime(root: Path, *, dev_mode: bool) -> None:
+    """A config without a runtime gets the first usable one here, as `bactolomew setup`
+    does, so the setup that follows pulls the tools image (a dev setup stays native)."""
+    import json
+    import os
+
+    from pipeline import ContainerRuntime as CR
+
+    config = _root_config(root)
+    if dev_mode or config.get("runtime") or os.environ.get("BACTOLOMEW_NATIVE"):
+        return
+    runtime = CR.suggest_runtime()
+    if not runtime:
+        return  # the setup's image row says what is missing
+    config["runtime"] = runtime
+    path = root / "bactolomew_config.json"
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _run_full_setup(parent: Optional[QtWidgets.QWidget], root: Path, *, dev_mode: bool) -> bool:
+    _pick_runtime(root, dev_mode=dev_mode)
+    dlg = FirstTimeSetupDialog(parent, dev_mode=dev_mode, root=root)
+    return dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted
+
+
+def ensure_app_ready(*, dev_mode: bool = False, parent: Optional[QtWidgets.QWidget] = None,
+                     root: Optional[Path] = None) -> bool:
+    """Before the run list: without a config, ask full or viewer first. A viewer install
+    writes its config and is ready (nothing to download); a full one runs First-Time Setup
+    when anything is missing. False when the user cancels."""
+    from pipeline.Setup import collect_setup_missing_paths, write_viewer_config
+    from pipeline.ToolEnv import APP_MODE_VIEWER, configured_app_mode, project_root
+
+    root = Path(root) if root is not None else project_root()
+    if not (root / "bactolomew_config.json").exists():
+        choice = SetupChoiceDialog(parent)
+        if choice.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return False
+        if choice.choice == CHOICE_VIEWER:
+            write_viewer_config(root)
+            return True
+        return _run_full_setup(parent, root, dev_mode=dev_mode)
+    config = _root_config(root)
+    if configured_app_mode(config) == APP_MODE_VIEWER:
+        write_viewer_config(root)  # makes runs/ and cache/ when they are missing
+        return True
+    if not collect_setup_missing_paths(root, config, dev_mode=dev_mode):
+        return True
+    return _run_full_setup(parent, root, dev_mode=dev_mode)
+
+
+def offer_pipeline_setup(parent: Optional[QtWidgets.QWidget] = None, *, dev_mode: bool = False,
+                         root: Optional[Path] = None, ask: bool = True) -> bool:
+    """From a viewer install to the pipeline: ask (unless `ask` is False), then run
+    First-Time Setup, which makes the install full. True when the pipeline is set up."""
+    from pipeline.ToolEnv import APP_MODE_FULL, configured_app_mode, project_root
+
+    root = Path(root) if root is not None else project_root()
+    if configured_app_mode(_root_config(root)) == APP_MODE_FULL:
+        return True
+    if ask:
+        box = QtWidgets.QMessageBox(parent)
+        box.setObjectName("PipelineSetupQuestion")
+        box.setIcon(QtWidgets.QMessageBox.Icon.NoIcon)
+        box.setWindowTitle("Set Up Pipeline")
+        box.setText("Running predictions needs the pipeline setup (tools image and databases, over 40 GB). "
+                    "Set it up now?")
+        go = box.addButton("Set Up", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
+        cancel = box.addButton("Cancel", QtWidgets.QMessageBox.ButtonRole.RejectRole)
+        for button, role in ((cancel, "flat"), (go, "primary")):
+            button.setProperty("role", role)
+            button.style().unpolish(button)
+            button.style().polish(button)
+        box.setDefaultButton(go)
+        box.exec()
+        if box.clickedButton() is not go:
+            return False
+    if not _run_full_setup(parent, root, dev_mode=dev_mode):
+        return False
+    return configured_app_mode(_root_config(root)) == APP_MODE_FULL

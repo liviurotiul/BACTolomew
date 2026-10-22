@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import signal
@@ -244,6 +245,25 @@ def engine_exe(runtime: str) -> str:
 # --------------------------------------------------------------------------- #
 def _engine_ref(image: str, engine: str) -> str:
     return podman_image_ref(image) if Path(engine).name == "podman" else image
+
+
+# The image's platforms (docker/build.sh), by the names engines and `uname -m` report.
+_PLATFORMS = {"amd64": "linux/amd64", "x86_64": "linux/amd64",
+              "arm64": "linux/arm64", "aarch64": "linux/arm64"}
+# fastGEAR (an x86_64 MATLAB runtime) is in the tools image only on this platform.
+FASTGEAR_PLATFORM = "linux/amd64"
+
+
+def engine_platform(engine: str = "docker") -> str:
+    """The platform the engine runs natively, linux/amd64 or linux/arm64 (Docker Desktop
+    on Apple Silicon: linux/arm64), so a pull takes that variant of a multi-platform tag and
+    a build never runs under emulation. Falls back to this machine's architecture, then to
+    linux/amd64."""
+    probe = (["info", "--format", "{{.Host.Arch}}"] if Path(engine).name == "podman"
+             else ["version", "--format", "{{.Server.Arch}}"])
+    rc, out = _probe([engine, *probe])
+    arch = out.strip().splitlines()[-1].strip().lower() if rc == 0 and out.strip() else ""
+    return _PLATFORMS.get(arch) or _PLATFORMS.get(platform.machine().lower(), "linux/amd64")
 
 
 def docker_image_present(image: str, engine: str = "docker") -> bool:
@@ -491,7 +511,7 @@ def ensure_fastgear_image(image: str, archive: str = "", *, engine: str = "docke
         raise RuntimeError(f"{path} loaded, but it does not hold {image}.")
     pull_ref_ = _engine_ref(image, engine)
     _log(log, f"Pulling {pull_ref_} ...")
-    if _stream([engine, "pull", "--platform", "linux/amd64", pull_ref_], log) != 0:
+    if _stream([engine, "pull", "--platform", FASTGEAR_PLATFORM, pull_ref_], log) != 0:
         raise RuntimeError(
             f"The fastGEAR image {image} is not available locally and could not be pulled. Set "
             "container.fastgear_archive to a saved copy (docker save) to build without Docker Hub."
@@ -502,15 +522,21 @@ def ensure_fastgear_image(image: str, archive: str = "", *, engine: str = "docke
 def build_image_local(image: str = TOOLS_IMAGE, *, repo_root: Optional[Path] = None,
                       log: Optional[LogFn] = None, engine: str = "docker",
                       fastgear_image: str = "", fastgear_archive: str = "") -> None:
-    """Build the tools image from docker/Dockerfile. With `fastgear_image` (and
-    `fastgear_archive`) the fastGEAR stage is built from that image, made present first."""
+    """Build the tools image from docker/Dockerfile for the engine's own platform
+    (engine_platform). On linux/amd64 with `fastgear_image` (and `fastgear_archive`) the
+    fastGEAR stage is built from that image, made present first; on linux/arm64 the image
+    is built without fastGEAR (FastBAPS is its population method), as docker/build.sh does."""
     repo = Path(repo_root) if repo_root else project_root()
     dockerfile = repo / "docker" / "Dockerfile"
     if not dockerfile.is_file():
         raise FileNotFoundError(f"Dockerfile not found: {dockerfile}")
     image = split_image_digest(image)[0]  # a build has no registry digest to tag with
+    target = engine_platform(engine)
     build_args: list[str] = []
-    if fastgear_image:
+    if target != FASTGEAR_PLATFORM:
+        _log(log, f"Building for {target}: fastGEAR (x86_64 only) is left out.")
+        build_args = ["--build-arg", "FASTGEAR=none", "--build-arg", "FASTGEAR_PROVENANCE="]
+    elif fastgear_image:
         base = ensure_fastgear_image(fastgear_image, fastgear_archive, engine=engine, log=log)
         # The label records the pinned ref (base was checked against it), or for an
         # unpinned one the image ID it resolved to.
@@ -520,7 +546,7 @@ def build_image_local(image: str = TOOLS_IMAGE, *, repo_root: Optional[Path] = N
         build_args = ["--build-arg", f"FASTGEAR_IMAGE={_engine_ref(base, engine)}",
                       "--build-arg", f"FASTGEAR_PROVENANCE={provenance}"]
     _log(log, f"Building image {image} from {dockerfile} (this can take a while)...")
-    rc = _stream([engine, "build", "--platform", "linux/amd64", "-f", str(dockerfile), *build_args,
+    rc = _stream([engine, "build", "--platform", target, "-f", str(dockerfile), *build_args,
                   "-t", image, "."], log, cwd=repo)
     if rc != 0:
         raise RuntimeError(f"{engine} build failed (exit {rc})")
@@ -538,7 +564,7 @@ def pull_ref(image: str, registry: str = "") -> str:
 def pull_image(image: str, registry: str = "", log: Optional[LogFn] = None, engine: str = "docker") -> None:
     ref = _engine_ref(pull_ref(image, registry) or image, engine)
     _log(log, f"Pulling {ref} ...")
-    if _stream([engine, "pull", "--platform", "linux/amd64", ref], log) != 0:
+    if _stream([engine, "pull", "--platform", engine_platform(engine), ref], log) != 0:
         raise RuntimeError(f"{engine} pull failed: {ref}")
     # Tag to the bare local name so the rest of the app refers to `image` (a digest
     # cannot be a tag: a pinned image is tagged with its name[:tag] part).
@@ -932,6 +958,6 @@ __all__ = [
     "read_image_metadata", "environment_provenance", "database_provenance",
     "sif_sha256", "sif_labels", "pull_ref",
     "ensure_tools_image", "ensure_docker_image", "ensure_singularity_image",
-    "build_image_local", "pull_image",
+    "build_image_local", "pull_image", "engine_platform",
     "smoke_test_tool",
 ]

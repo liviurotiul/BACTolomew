@@ -1,0 +1,10 @@
+name: bactolomew-quast
+channels:
+  - conda-forge
+  - bioconda
+# QUAST alone (CheckM2 is the checkm2 env): quast 5.3.0's linux-aarch64 build needs Python
+# 3.13, which CheckM2's TensorFlow is not built for. Its build imports distutils, gone
+# from Python 3.12 on; setuptools provides it.
+dependencies:
+  - quast=5.3.0
+  - setuptools<81

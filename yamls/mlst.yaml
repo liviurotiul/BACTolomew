@@ -2,5 +2,24 @@ name: bactolomew-mlst
 channels:
   - conda-forge
   - bioconda
+# mlst 2.35.0 is installed without its dependencies (x-bactolomew no_deps): its recipe
+# asks for the perl-bioperl bundle, which mlst does not use and which pulls samtools
+# 0.1.19, built against different zlib and OpenSSL versions per platform. perl-moo too:
+# its recipe asks for perl-moose (not used by Moo), whose builds need a different
+# perl-try-tiny per platform; Moo's own dependencies are listed instead. The list below
+# is the rest of the recipes' dependencies; the same on every platform.
 dependencies:
-  - mlst
+  - perl
+  - zlib
+  - perl-json
+  - perl-list-moreutils
+  - perl-file-which
+  - perl-class-method-modifiers
+  - perl-role-tiny
+  - perl-sub-quote
+  - any2fasta=0.8.1
+  - blast=2.16.0
+x-bactolomew:
+  no_deps:
+    - mlst=2.35.0
+    - perl-moo=2.005004

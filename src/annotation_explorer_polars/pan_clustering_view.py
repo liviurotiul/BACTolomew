@@ -89,9 +89,10 @@ _BOX_TICK_PX = 5.0
 _BOX_TITLE_GAP_PX = 7.0
 
 
-def _trait_label(name: str) -> str:
-    """The fastGEAR cluster is not the MDS cluster: say which one it is."""
-    return "fastGEAR cluster" if name == "Cluster" else name
+def _trait_label(name: str, population: str = "fastGEAR") -> str:
+    """The population structure cluster (fastGEAR, or FastBAPS for a run made with it) is
+    not the MDS cluster: say which one it is."""
+    return f"{population} cluster" if name == "Cluster" else name
 
 
 def _categorical_color(index: int, count: int) -> QtGui.QColor:
@@ -209,6 +210,9 @@ class PanClusteringView(QtWidgets.QWidget):
         super().__init__(parent)
         self.setObjectName("PanClusteringView")
         self._pan = pan
+        # The method that found the run's clades and clusters (fastGEAR or FastBAPS).
+        population_label = getattr(pan, "population_label", None)
+        self._population = population_label() if callable(population_label) else "fastGEAR"
         self._shared = shared_state(pan)
         self._traits: Dict[str, Dict[str, str]] = {str(k): dict(v) for k, v in (traits or {}).items()}
         self._hover_meta: Dict[str, Dict[str, str]] = {str(k): dict(v) for k, v in (hover_metadata or {}).items()}
@@ -481,6 +485,9 @@ class PanClusteringView(QtWidgets.QWidget):
     def settings_open(self) -> bool:
         return not self._settings_column.isHidden()
 
+    def _trait_name(self, name: str) -> str:
+        return _trait_label(name, self._population)
+
     def set_settings_open(self, visible: bool) -> None:
         self._settings_auto_folded = False
         self._settings_user_opened = bool(visible)
@@ -522,7 +529,7 @@ class PanClusteringView(QtWidgets.QWidget):
         options = [(KMEANS, KMEANS_LABEL, "The MDS cluster (k-means) of each isolate")]
         names = [name for name in ("Clade", "Cluster", "ST") if name in self._traits]
         names += sorted((n for n in self._traits if n not in names), key=str.casefold)
-        options += [(name, _trait_label(name), f"Color by {_trait_label(name)}") for name in names]
+        options += [(name, self._trait_name(name), f"Color by {self._trait_name(name)}") for name in names]
         return options
 
     def set_traits(self, traits: Mapping[str, Mapping[str, str]], hover_metadata: Mapping[str, Mapping[str, str]]) -> None:
@@ -885,7 +892,7 @@ class PanClusteringView(QtWidgets.QWidget):
                 color_counts[value] = color_counts.get(value, 0) + 1
             else:
                 missing += 1
-        color_label = KMEANS_LABEL if self._color_by == KMEANS else _trait_label(self._color_by)
+        color_label = KMEANS_LABEL if self._color_by == KMEANS else self._trait_name(self._color_by)
         if self._color_binned:
             color_label += " (quantiles)"
         entries = [
@@ -1166,13 +1173,13 @@ class PanClusteringView(QtWidgets.QWidget):
         shown = set()
         if self._color_by != KMEANS:
             value = self._value_of(self._color_by, sample, idx) or "no value"
-            lines.append(f"{html.escape(_trait_label(self._color_by))}: {html.escape(value)}")
+            lines.append(f"{html.escape(self._trait_name(self._color_by))}: {html.escape(value)}")
             shown.add(self._color_by.casefold())
         lines.append(f"{KMEANS_LABEL}: {int(result.labels[idx])}")
         for name in ("Clade", "Cluster"):
             value = self._traits.get(name, {}).get(sample, "")
             if value and name.casefold() not in shown:
-                lines.append(f"<span style='color:{muted}'>{_trait_label(name)}: {html.escape(value)}</span>")
+                lines.append(f"<span style='color:{muted}'>{self._trait_name(name)}: {html.escape(value)}</span>")
                 shown.add(name.casefold())
         for label, value in self._hover_meta.get(sample, {}).items():
             if label.casefold() not in shown:
@@ -1363,7 +1370,7 @@ class PanClusteringView(QtWidgets.QWidget):
             f"Isolates with no genes in range (not clustered): {len(result.dropped)}",
         ]
         lines += [f"  {name}" for name in result.dropped]
-        lines.append(f"Color: {KMEANS_LABEL if self._color_by == KMEANS else _trait_label(self._color_by)}")
+        lines.append(f"Color: {KMEANS_LABEL if self._color_by == KMEANS else self._trait_name(self._color_by)}")
         return "\n".join(lines) + "\n"
 
     def _export_size(self) -> Tuple[int, int]:

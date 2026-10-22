@@ -218,7 +218,6 @@ def _unmasked_names(gubbins: Mapping[str, Any]) -> list[str]:
 _UNMASKED_TEXT = {
     "lineage_skipped": "lineage not run by Gubbins",
     "dropped_by_gubbins": "left out by Gubbins (too many N or gaps)",
-    "no_lineage": "no fastGEAR lineage",
 }
 
 
@@ -231,9 +230,11 @@ def _masking_notes(gubbins: Mapping[str, Any]) -> list[str]:
     for item in record.get("samples_unmasked") or []:
         if isinstance(item, Mapping):
             by_reason.setdefault(str(item.get("reason")), []).append(str(item.get("sample")))
+    source = str(gubbins.get("lineage_source") or "fastGEAR")
     for reason, names in by_reason.items():
+        text = f"no {source} lineage" if reason == "no_lineage" else _UNMASKED_TEXT.get(reason, reason)
         notes.append(
-            f"{len(names)} genome(s) not recombination-masked ({_UNMASKED_TEXT.get(reason, reason)}): "
+            f"{len(names)} genome(s) not recombination-masked ({text}): "
             + ", ".join(names)
         )
     return notes

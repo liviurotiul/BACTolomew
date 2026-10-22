@@ -145,6 +145,7 @@ def _sample_clade_column_map(columns: Sequence[object]) -> dict[str, str]:
         "lineage": {"lineage", "fastgearlineage"},
         "cluster": {"cluster", "fastgearcluster"},
         "strainindex": {"strainindex", "fastgearstrainindex", "index", "strainidx"},
+        "method": {"fastgearmethod", "method"},
     }
 
     mapped: dict[str, str] = {}
@@ -184,7 +185,11 @@ def _normalize_sample_clades(df: pd.DataFrame, *, context: str) -> pd.DataFrame:
         raise RuntimeError(f"{context} contains duplicate sample rows: {', '.join(dupes)}")
 
     sort_index = pd.to_numeric(out["FastGearStrainIndex"], errors="coerce")
-    out["FastGearMethod"] = "fastgear"
+    # A sample_clades.tsv names its method (fastgear or fastbaps); fastGEAR's own
+    # lineage_information.txt has none.
+    out["FastGearMethod"] = (
+        df.loc[out.index, col_map["method"]].astype(str).str.strip() if "method" in col_map else "fastgear"
+    )
     out = out[_SAMPLE_CLADE_COLUMNS]
     out = out.assign(_sort_index=sort_index).sort_values(
         ["_sort_index", "Sample"],

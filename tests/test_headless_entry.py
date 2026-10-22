@@ -93,13 +93,39 @@ class SetupPlanTest(unittest.TestCase):
         with mock.patch.object(CR, "runtime_status", return_value=missing):
             _config, updates, problem = M._setup_config(args, {}, root)
         self.assertEqual(updates, {"runtime": "singularity",
-                                   "container": {"sif_path": "/opt/bactolomew/bactolomew-tools-0.2.0.sif"}})
+                                   "container": {"sif_path": "/opt/bactolomew/bactolomew-0.3.0.sif"}})
         self.assertIn("not installed", problem)
         # No runtime anywhere: still a plan (for docker), with the reason it cannot run.
         args = argparse.Namespace(runtime=None, sif=None)
         with mock.patch.object(CR, "suggest_runtime", return_value=None):
             config, _updates, problem = M._setup_config(args, {}, root)
         self.assertEqual((config["runtime"], problem), ("docker", M.NO_RUNTIME))
+
+    def test_check_in_viewer_mode_needs_no_image_or_databases(self):
+        import contextlib
+        import io
+        import json
+        from unittest import mock
+
+        import bactolomew_main as M
+        from pipeline import ContainerRuntime as CR
+        from pipeline import ToolEnv
+
+        root = Path(tempfile.mkdtemp(prefix="viewer-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / "bactolomew_config.json").write_text(json.dumps({"mode": "viewer"}))
+        out = io.StringIO()
+        with mock.patch.object(ToolEnv, "project_root", return_value=root), \
+                mock.patch.object(M, "_qt_report", return_value=(True, "Qt")), \
+                mock.patch.object(M, "polars_cpu_problem", return_value=""), \
+                mock.patch.object(CR, "detect_runtimes", return_value={"docker": False}), \
+                contextlib.redirect_stdout(out):
+            rc = M.cmd_check(None)
+        text = out.getvalue()
+        self.assertEqual(rc, 0, text)
+        self.assertRegex(text, r"Mode\s+info\s+viewer")
+        self.assertRegex(text, r"Bakta database\s+info\s+not needed \(viewer\)")
+        self.assertNotIn("MISSING", text)
 
 
 if __name__ == "__main__":

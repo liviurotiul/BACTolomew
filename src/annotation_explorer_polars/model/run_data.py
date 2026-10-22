@@ -948,6 +948,11 @@ class RunData:
         # The gene evidence sources' categories, then the marker catalog's.
         category_map = {"Bakta VFDB": "VIRULENCE", "Bakta IS": "MOBILE", **load_marker_db_category_map()}
         recorded = _read_run_inputs(output_path).get("marker_categories") or {}
+        # A database this install's catalog lacks (a run made elsewhere, no DB/)
+        # keeps the category the run recorded.
+        for name, category in recorded.items() if isinstance(recorded, dict) else ():
+            if clean_text(name) and clean_text(category):
+                category_map.setdefault(clean_text(name), clean_text(category))
         for name in user_dbs:
             category = category_map.get(name) or (recorded.get(name) if isinstance(recorded, dict) else None)
             if category:

@@ -7,6 +7,8 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
+from pipeline.PopulationStructure import sample_clades_path
+
 from .panaroo_common import _file_signature
 from .polars_io import read_csv_df
 
@@ -68,10 +70,14 @@ def _load_presence_matrix(panaroo_out: Path) -> Tuple[np.ndarray, List[str], Lis
 
 
 def _find_fastgear_sample_clades(output_dir: Path) -> Optional[Path]:
-    direct = output_dir / "fastgear" / "sample_clades.tsv"
+    """The run's sample_clades.tsv: in fastgear/ (fastGEAR, every run before FastBAPS)
+    or fastbaps/, by the method run_config.json records (pipeline.PopulationStructure)."""
+    direct = sample_clades_path(output_dir)
+    if direct is None:
+        return None
     if direct.is_file():
         return direct
-    fastgear_root = output_dir / "fastgear"
+    fastgear_root = direct.parent
     if not fastgear_root.exists():
         return None
     matches = [p for p in fastgear_root.rglob("sample_clades.tsv") if p.is_file()]

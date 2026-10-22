@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import pandas as pd
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from pipeline.PopulationStructure import run_population_label
+
 from .pan_view import PanHeatmapWidget
 from .panaroo_force import CgmlstForceGraphView
 from .phylo import ORDER_AS_COMPUTED, ORDER_LADDER_DEPTH, ORDER_LADDER_SIZE, ORDER_MODES
@@ -233,6 +235,11 @@ class PanCoreAccessoryTab(QtWidgets.QWidget):
         # instead of building its own, and shares the frames it is given
         # (read only) instead of copying them.
         self._pan_data = pan_data
+        # The method that found the clades and clusters (fastGEAR, or FastBAPS for a run
+        # made with it): the name the Root choice, the legend and their tooltips use.
+        self._population_name = (
+            pan_data.population_label() if pan_data is not None else run_population_label(self._output_dir)
+        )
         if single_view is not None and single_view not in SINGLE_VIEWS:
             raise ValueError(f"unknown pan view {single_view!r}")
         self._single_view = single_view
@@ -622,7 +629,7 @@ class PanCoreAccessoryTab(QtWidgets.QWidget):
         root_combo.setObjectName("TreeRootCombo")
         root_combo.setAccessibleName("Tree root")
         for mode, text in ROOT_CHOICES:
-            root_combo.addItem(text, mode)
+            root_combo.addItem(f"{self._population_name} clades" if mode == ROOT_GROUPS else text, mode)
         # A long "As in file (outgroup X)" is elided in the middle.
         root_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         root_combo.setMinimumContentsLength(6)
@@ -632,7 +639,7 @@ class PanCoreAccessoryTab(QtWidgets.QWidget):
         order_tooltip = (
             "Leaf order. By clade size, By depth: the tree ladderized, the larger clade drawn above the "
             "smaller one at every branching, by number of genomes (clade size) or by the longest branch path "
-            "to a tip (depth). The fastGEAR clades and "
+            f"to a tip (depth). The {self._population_name} clades and "
             "clusters stay together; only the drawing order changes, never the tree. As computed: the order "
             "the root and the clade grouping give."
         )
@@ -863,8 +870,8 @@ class PanCoreAccessoryTab(QtWidgets.QWidget):
             parts.append(f"<b>Cluster</b>&nbsp;&nbsp;{chips}")
         legend.setText("&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;".join(parts))
         legend.setToolTip(
-            "Clade: fastGEAR lineages, the tree's background bands (number of genomes in the sample set). "
-            "Cluster: fastGEAR clusters, the branch colors and the C brackets."
+            f"Clade: {self._population_name} lineages, the tree's background bands (number of genomes in the "
+            f"sample set). Cluster: {self._population_name} clusters, the branch colors and the C brackets."
             if parts
             else ""
         )
@@ -1514,7 +1521,7 @@ class PanCoreAccessoryTab(QtWidgets.QWidget):
             self._cluster_by_sample = cluster_by_sample
             self._loaded_sample_clades_sig = sig
             _log_view_event(
-                f"loaded fastGEAR assignments: {path} "
+                f"loaded {self._population_name} assignments: {path} "
                 f"({len(set(lineage_by_sample.values()))} clades, "
                 f"{len(set(cluster_by_sample.values()))} clusters)"
             )
@@ -1601,7 +1608,7 @@ class PanCoreAccessoryTab(QtWidgets.QWidget):
             return ""
         mode = self._tree_root_mode(source)
         if mode == ROOT_GROUPS:
-            return "Root: fastGEAR clades"
+            return f"Root: {self._population_name} clades"
         if mode == ROOT_MIDPOINT:
             return "Root: midpoint"
         return f"Root: {self._file_root_name(source)}"
@@ -1668,10 +1675,10 @@ class PanCoreAccessoryTab(QtWidgets.QWidget):
             root_combo.setToolTip(
                 f"{self.tree_root_text()}.{note} As in file: the root the pipeline chose (midpoint, or the "
                 "outgroup set for the run). Midpoint: the middle of the longest tip to tip path. "
-                "fastGEAR clades: the edge that keeps the fastGEAR clades together."
+                f"{self._population_name} clades: the edge that keeps the {self._population_name} clades together."
                 if source.rooted
                 else f"{self.tree_root_text()}. This tree file is unrooted: it is drawn rooted at its "
-                "midpoint unless you pick the fastGEAR clades."
+                f"midpoint unless you pick the {self._population_name} clades."
             )
         if self._tree_notes is None:
             return
@@ -1710,8 +1717,7 @@ class PanCoreAccessoryTab(QtWidgets.QWidget):
             self._tree_notes.setVisible(count > 0 or unmasked_count > 0 or show_chip)
             self._tree_notes.fit()
 
-    @staticmethod
-    def _gubbins_chip_text(index: TreeIndex) -> Tuple[str, str]:
+    def _gubbins_chip_text(self, index: TreeIndex) -> Tuple[str, str]:
         """The non-convergence chip's text and tooltip: per lineage, the
         lineages that did not converge and each one's iterations; else the
         one Gubbins run's."""
@@ -1733,7 +1739,7 @@ class PanCoreAccessoryTab(QtWidgets.QWidget):
             noun = "lineage" if len(ids) == 1 else "lineages"
             lines = [lineage_line(entry) for entry in lineages]
             tooltip = (
-                "Gubbins ran once per fastGEAR lineage; in "
+                f"Gubbins ran once per {self._population_name} lineage; in "
                 + ("this lineage" if len(ids) == 1 else "these lineages")
                 + " it did not report convergence, so the recombination it removed may be incomplete. "
                 + " ".join(lines)

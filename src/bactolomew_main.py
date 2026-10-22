@@ -2,6 +2,7 @@
 
     bactolomew [gui] [--dev]          the desktop app (the default)
     bactolomew setup --yes [...]      first-time setup without a window
+    bactolomew setup --viewer         a viewer-only install: open shared runs, no downloads
     bactolomew run --genomes DIR --out DIR [--threads N] [--resume]
     bactolomew check                  what this machine has and lacks
     bactolomew db --list | --add FASTA | --remove NAME   marker and compound databases
@@ -80,7 +81,7 @@ NO_RUNTIME = ("No usable container runtime: install Docker, Podman or Apptainer 
 
 def default_sif_path(root: Path, config: dict) -> Path:
     """Where setup writes the tools SIF when the config names none: the install folder,
-    named after the image (bactolomew-tools-0.2.0.sif)."""
+    named after the image (bactolomew-0.3.0.sif)."""
     from pipeline.ToolEnv import TOOLS_IMAGE
 
     container = config.get("container") if isinstance(config.get("container"), dict) else {}
@@ -177,10 +178,18 @@ class _TextProgress:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
-    from pipeline.Setup import SetupJob, _read_config
+    from pipeline.Setup import SetupJob, _read_config, write_viewer_config
     from pipeline.ToolEnv import project_root, save_app_config
 
     root = project_root()
+    if getattr(args, "viewer", False):
+        if args.dry_run:
+            print(f"[dry-run] would set mode \"viewer\" in {root / 'bactolomew_config.json'} (no downloads)")
+            return 0
+        print(f"Viewer install: {write_viewer_config(root)} says mode \"viewer\".")
+        print("Open shared runs with Import Run... in the run list. To run predictions later: "
+              "`bactolomew setup`.")
+        return 0
     config, updates, problem = _setup_config(args, _read_config(root), root)
     if args.dry_run:
         print(f"[dry-run] project folder: {root}")
@@ -352,7 +361,8 @@ def cmd_db(args: argparse.Namespace) -> int:
 def cmd_check(_args: argparse.Namespace) -> int:
     from pipeline import ContainerRuntime as CR
     from pipeline.Setup import SetupJob, _project_db_layout_ready, _project_db_root, _read_config
-    from pipeline.ToolEnv import _resolve_runtime, project_root, resource_budget_text
+    from pipeline.ToolEnv import APP_MODE_VIEWER, _resolve_runtime, configured_app_mode, project_root, \
+        resource_budget_text
 
     problems = 0
 
@@ -376,6 +386,9 @@ def cmd_check(_args: argparse.Namespace) -> int:
     config_path = root / "bactolomew_config.json"
     config = _read_config(root)
     row("Config", config_path.is_file(), str(config_path) + ("" if config_path.is_file() else " (run `setup`)"))
+    viewer = config_path.is_file() and configured_app_mode(config) == APP_MODE_VIEWER
+    row("Mode", None, "viewer (opens shared runs; `setup` adds the pipeline)" if viewer
+        else "full (runs the pipeline)")
     row("Resources", None, resource_budget_text())
     missing_cpu = polars_cpu_problem()
     if missing_cpu:
@@ -383,6 +396,14 @@ def cmd_check(_args: argparse.Namespace) -> int:
                           f"install the compatible one: {sys.executable} -m pip install 'polars[rtcompat]'")
 
     usable = [name for name, ok in CR.detect_runtimes().items() if ok is True]
+    if viewer:
+        # The tools image and databases are not needed to view runs: reported, never counted.
+        row("Usable runtimes", None, ", ".join(usable) or "none")
+        for label in ("Tool image", "Bakta database", "CheckM2 database", "DB folder"):
+            row(label, None, "not needed (viewer)")
+        print()
+        print("Ready to view runs." if not problems else f"{problems} item(s) missing.")
+        return 0 if not problems else 1
     if not config.get("runtime") and not os.environ.get("BACTOLOMEW_NATIVE"):
         # No runtime saved yet: report the one setup will pick, as setup does.
         if usable:
@@ -438,6 +459,9 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--bakta", choices=("full",), default="full",
                        help="Bakta database type: full, the only one (a 39.4 GB download that needs about "
                             "121 GB free while it unpacks; a light database installed earlier is kept and used)")
+    setup.add_argument("--viewer", action="store_true",
+                       help="viewer-only install: open runs shared by others, download nothing "
+                            "(plain `setup` later adds the pipeline)")
     setup.add_argument("--dry-run", action="store_true", help="show what would be installed, change nothing")
     setup.add_argument("--verbose", "-v", action="store_true", help="print every output line of the tools")
 

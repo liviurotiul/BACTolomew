@@ -994,7 +994,7 @@ class DemoEnv:
         first = next(iter(schemas.values()), "")
         config = {
             "runtime": "docker",
-            "container": {"image": "bactolomew-tools:0.2.0", "registry": DEMO_REGISTRY, "sif_path": "",
+            "container": {"image": "liviurotiul/bactolomew:0.3.0", "registry": DEMO_REGISTRY, "sif_path": "",
                           "build_on_missing": False},
             "databases": {
                 "root_dir": str(self.db),

@@ -13,9 +13,9 @@
 #   # Bootstrap without cloning first (installs into ~/BACTolomew by default):
 #   curl -fsSL -o install.sh https://raw.githubusercontent.com/liviurotiul/BACTolomew/main/install.sh && bash install.sh
 #
-#   # Custom source, target, Python or a headless (no Qt) install:
+#   # Custom source, target, Python, a headless (no Qt) or a viewer-only install:
 #   bash install.sh [--source <repo-dir|tarball>] [--dir <install-dir>] [--ref <branch|tag>]
-#                   [--python <path>] [--headless] [--no-lock]
+#                   [--python <path>] [--headless | --viewer] [--no-lock]
 #
 # When run outside a checkout and without --source, the installer clones GITHUB_URL.
 # Everything runs from main() on the last line, so a partial download does nothing.
@@ -57,6 +57,8 @@ Options:
   --ref <branch|tag>      what to clone (only when cloning)
   --python <path>         the Python to build the venv with (also: PYTHON=<path>); Python 3.$PY_MIN to 3.$PY_MAX
   --headless              pipeline only, no Qt: ./bactolomew then offers setup, run, check and db
+  --viewer                the window only, to open runs shared by others: no container runtime,
+                          tools image or databases (about 1 GB); \`./bactolomew setup\` adds them later
   --no-lock               install the newest versions within requirements*.txt instead of the tested lock
 
 Outside a checkout and without --source, the installer clones the repo.
@@ -234,6 +236,10 @@ $(python_hint)"
 # --------------------------------------------------------------------------- #
 check_runtime() {
   local usable="" notes="" out rc
+  if [ "$VIEWER" = 1 ]; then
+    say "Viewer install: no container runtime needed (running predictions later needs one)"
+    return 0
+  fi
   local to=""; command -v timeout >/dev/null 2>&1 && to="timeout 30"
   if command -v docker >/dev/null 2>&1; then
     rc=0; out="$($to docker info 2>&1 >/dev/null)" || rc=$?
@@ -581,11 +587,23 @@ EOF
   chmod +x "$LAUNCHER"
 }
 
+# A viewer install says so in its config, unless a config exists already (that install
+# keeps its mode; `./bactolomew setup --viewer` switches it).
+write_viewer_config() {
+  local config="$INSTALL_DIR/bactolomew_config.json"
+  if [ -e "$config" ]; then
+    say "Keeping the existing $config"
+    return 0
+  fi
+  printf '{\n  "mode": "viewer"\n}\n' > "$config"
+  mkdir -p "$INSTALL_DIR/runs" "$INSTALL_DIR/cache"
+}
+
 # --------------------------------------------------------------------------- #
 main() {
   SELF="${BASH_SOURCE[0]:-$0}"   # this script's path ("bash" when piped)
   SCRIPT_DIR="$(cd "$(dirname "$SELF")" 2>/dev/null && pwd || echo "$PWD")"
-  SOURCE=""; INSTALL_DIR=""; PYTHON_ARG=""; HEADLESS=0; USE_LOCK=1
+  SOURCE=""; INSTALL_DIR=""; PYTHON_ARG=""; HEADLESS=0; VIEWER=0; USE_LOCK=1
 
   need_val() { [ "$#" -ge 2 ] || die "$1 requires a value"; }
   while [ $# -gt 0 ]; do
@@ -595,11 +613,14 @@ main() {
       --ref|--branch) need_val "$@"; GITHUB_REF="$2"; shift 2 ;;
       --python)       need_val "$@"; PYTHON_ARG="$2"; shift 2 ;;
       --headless)     HEADLESS=1; shift ;;
+      --viewer)       VIEWER=1; shift ;;
       --no-lock)      USE_LOCK=0; shift ;;
       -h|--help)      usage; exit 0 ;;
       *) die "unknown argument: $1 (see --help)" ;;
     esac
   done
+
+  [ "$HEADLESS" = 1 ] && [ "$VIEWER" = 1 ] && die "--viewer needs the window, --headless has none: pick one."
 
   detect_distro
   # --- 1. prerequisites -----------------------------------------------------
@@ -612,10 +633,13 @@ main() {
   install_deps
   # --- 4. launcher, then the Qt libraries ----------------------------------
   write_launcher
+  [ "$VIEWER" = 1 ] && write_viewer_config
   [ "$HEADLESS" = 1 ] || check_qt_libs
 
   say "Done. Launch with:  $LAUNCHER"
-  if [ "$HEADLESS" = 1 ]; then
+  if [ "$VIEWER" = 1 ]; then
+    say "Viewer install: open shared runs with Import Run... in the run list. To run predictions later: \`$LAUNCHER setup\`."
+  elif [ "$HEADLESS" = 1 ]; then
     say "Headless install: \`$LAUNCHER check\`, \`$LAUNCHER setup --yes\` (tool image and databases), \`$LAUNCHER run --genomes DIR --out DIR\`."
   else
     say "The first start (or \`$LAUNCHER setup --yes\` without a window) gets the tools image and the databases."

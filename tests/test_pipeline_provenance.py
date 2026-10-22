@@ -207,6 +207,19 @@ class ImageAcquisitionTest(unittest.TestCase):
         self.assertEqual(self._ensure("bactolomew-tools:0.2.0", pull_ok=True, build_on_missing=True),
                          [("build", "bactolomew-tools:0.2.0")])
 
+    def test_arm64_engine_pulls_and_builds_arm64_without_fastgear(self) -> None:
+        streamed = []
+        with mock.patch.object(CR, "_probe", return_value=(0, "arm64")), \
+                mock.patch.object(CR, "_stream", side_effect=lambda cmd, log, **_kw: streamed.append(cmd) or 0), \
+                mock.patch.object(CR, "ensure_fastgear_image") as fastgear:
+            CR.pull_image(REF, log=lambda _m: None)
+            CR.build_image_local(REF, log=lambda _m: None, fastgear_image="pgcbioinfo/fastgear:latest")
+        fastgear.assert_not_called()
+        pull, build = streamed[0], streamed[-1]
+        self.assertEqual(pull[:4], ["docker", "pull", "--platform", "linux/arm64"])
+        self.assertEqual(build[:4], ["docker", "build", "--platform", "linux/arm64"])
+        self.assertIn("FASTGEAR=none", build)
+
     def test_singularity_pulls_a_full_reference_without_registry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             sif = str(Path(tmp) / "tools.sif")

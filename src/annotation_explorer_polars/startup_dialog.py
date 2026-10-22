@@ -10,7 +10,7 @@ import time
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, List, Optional
+from typing import TYPE_CHECKING, Callable, List, Optional, Sequence
 
 from PyQt6 import QtCore, QtWidgets
 
@@ -48,6 +48,47 @@ class RunEntry:
     can_resume: bool
     pending_text: Optional[str] = None
     status_detail: Optional[str] = None
+    # Imported with Import Run... (a share package or a copied run folder).
+    shared: bool = False
+    # Compatibility findings (pipeline.RunShare.Issue), warnings first.
+    issues: tuple = ()
+    metadata_label: str = ""
+    version: str = ""
+
+    @property
+    def warnings(self) -> list:
+        return [issue for issue in self.issues if issue.level == "warning"]
+
+
+def _viewer_mode() -> bool:
+    """A viewer-only install (no tools image or databases)."""
+    from pipeline.ToolEnv import viewer_mode
+
+    return viewer_mode()
+
+
+PIPELINE_SETUP_NEEDED = "Needs the pipeline setup"
+IMPORTED_VIEW_ONLY = "Imported runs can be viewed only"
+
+
+def _metadata_label(run_id: str, output_dir: Path) -> str:
+    """The card's metadata line, from the run's remembered choice."""
+    from pipeline.RunShare import METADATA_CSV, is_shared_run, read_manifest
+
+    from .cache import RUN_METADATA_SOURCE, load_run_cache
+
+    cached = load_run_cache(run_id, create=False)
+    if cached.get("metadata_source") == RUN_METADATA_SOURCE:
+        return "Metadata: run data only"
+    if cached.get("metadata_csv"):
+        return f"Metadata: {Path(cached['metadata_csv']).name}"
+    if is_shared_run(output_dir):
+        # Opened first with what it was shared with (app._shared_metadata).
+        if (output_dir / METADATA_CSV).is_file():
+            return "Metadata: the shared CSV"
+        if read_manifest(output_dir).get("metadata") == "run":
+            return "Metadata: run data only"
+    return "Metadata: not chosen"
 
 
 class PipelineRunner(QtCore.QThread):
@@ -296,6 +337,8 @@ class RunCard(QtWidgets.QFrame):
         on_resume: Optional[Callable[[RunEntry], None]] = None,
         on_stop: Optional[Callable[[RunEntry], None]] = None,
         parent: Optional[QtWidgets.QWidget] = None,
+        *,
+        on_more: Optional[Callable[[RunEntry, str], None]] = None,
     ) -> None:
         super().__init__(parent)
         self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
@@ -310,6 +353,11 @@ class RunCard(QtWidgets.QFrame):
         title = _ElidedLabel(entry.sample_set_id or entry.run_id)
         title.setProperty("role", "runTitle")
         title_row.addWidget(title, 1)
+        if entry.shared:
+            chip = QtWidgets.QLabel("Shared")
+            chip.setProperty("role", "runChip")
+            chip.setToolTip("Imported with Import Run...")
+            title_row.addWidget(chip, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
         layout.addLayout(title_row)
 
         attempt_label = entry.run_id
@@ -321,6 +369,19 @@ class RunCard(QtWidgets.QFrame):
         subtitle = QtWidgets.QLabel(" • ".join(bit for bit in subtitle_bits if bit))
         subtitle.setProperty("role", "runMeta")
         layout.addWidget(subtitle)
+        if entry.metadata_label:
+            metadata = QtWidgets.QLabel(entry.metadata_label)
+            metadata.setProperty("role", "runMeta")
+            layout.addWidget(metadata)
+        from pipeline.RunShare import warning_summary
+
+        warning_text = warning_summary(entry.issues)
+        if warning_text:
+            warning = QtWidgets.QLabel(warning_text)
+            warning.setProperty("role", "runWarning")
+            warning.setWordWrap(True)
+            warning.setToolTip("\n".join(issue.text for issue in entry.warnings))
+            layout.addWidget(warning)
 
         steps = entry.steps
         progress = QtWidgets.QProgressBar()
@@ -378,6 +439,10 @@ class RunCard(QtWidgets.QFrame):
             monitor_btn.clicked.connect(lambda: on_monitor(entry) if on_monitor else None)
             resume_btn = QtWidgets.QPushButton("Resume")
             resume_btn.setEnabled(entry.can_resume)
+            if entry.shared:
+                resume_btn.setToolTip(IMPORTED_VIEW_ONLY)
+            elif not entry.can_resume and not entry.running and _viewer_mode():
+                resume_btn.setToolTip(PIPELINE_SETUP_NEEDED)
             resume_btn.clicked.connect(lambda: on_resume(entry) if on_resume else None)
             stop_btn = QtWidgets.QPushButton("Stop")
             stop_btn.setEnabled(entry.running)
@@ -389,9 +454,37 @@ class RunCard(QtWidgets.QFrame):
             for _b in (monitor_btn, resume_btn, stop_btn, force_btn):
                 _b.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
                 btn_row.addWidget(_b)
+        btn_row.addWidget(self._more_button(entry, on_more))
         btn_row.addWidget(view_btn)
         layout.addSpacing(4)
         layout.addLayout(btn_row)
+
+    def _more_button(
+        self, entry: RunEntry, on_more: Optional[Callable[[RunEntry, str], None]]
+    ) -> QtWidgets.QPushButton:
+        """More: everything else about the run (details, metadata, sharing, its folder)."""
+        button = QtWidgets.QPushButton("More")
+        button.setObjectName("RunMoreButton")
+        button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        menu = QtWidgets.QMenu(button)
+        items = [
+            ("details", "Run Details...", True, "Versions, tools, databases and what may not match"),
+            ("metadata", "Change Metadata...", not entry.running, "Choose this run's metadata CSV or use the run's own data"),
+            ("export", "Export for Sharing...", entry.can_view and entry.status == "success" and not entry.running,
+             "One file with what the explorer needs to show this run"),
+            ("folder", "Show in Folder", True, "Open the run's folder"),
+        ]
+        if entry.shared:
+            items.append(("remove", "Remove...", not entry.running, "Delete this imported run from the run list"))
+        for key, text, enabled, tip in items:
+            action = menu.addAction(text)
+            action.setEnabled(bool(enabled))
+            action.setToolTip(tip)
+            action.setObjectName(f"Run{key.capitalize()}Action")
+            action.triggered.connect(lambda _c=False, k=key: on_more(entry, k) if on_more else None)
+        menu.setToolTipsVisible(True)
+        button.setMenu(menu)
+        return button
 
     def set_selected(self, selected: bool) -> None:
         if bool(self.property("selected")) == bool(selected):
@@ -400,15 +493,58 @@ class RunCard(QtWidgets.QFrame):
         _repolish(self)
 
 
+def _image_population_methods() -> tuple:
+    """The population structure methods of the configured tools image (empty when it
+    cannot be checked); cached per image id by pipeline.PopulationStructure, so only the
+    first New Run window of a session waits for the image check (in a worker thread)."""
+    try:
+        from pipeline.PopulationStructure import image_population_methods
+
+        return image_population_methods() or ()
+    except Exception:
+        return ()
+
+
+class _PopulationProbe(QtCore.QObject):
+    """Runs _image_population_methods in a worker thread; `done` arrives on the GUI thread."""
+
+    done = QtCore.pyqtSignal(object)
+
+    def start(self) -> None:
+        import threading
+
+        threading.Thread(target=self._run, daemon=True, name="new-run-image-check").start()
+
+    def _run(self) -> None:
+        methods = _image_population_methods()
+        try:
+            self.done.emit(methods)
+        except RuntimeError:  # the window was closed first
+            pass
+
+
 class NewRunDialog(QtWidgets.QDialog):
-    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
+    def __init__(
+        self, parent: Optional[QtWidgets.QWidget] = None, *, population_methods: Optional[Sequence[str]] = None
+    ) -> None:
         super().__init__(parent)
         self.genome_paths: List[Path] = []
+        # The method picked in the dialog (None: the config's phylo.population_method).
+        self.population_method: Optional[str] = None
+        self.population_combo: Optional[QtWidgets.QComboBox] = None
 
         self.setObjectName("NewRunDialog")
         self.setWindowTitle("Start New Run")
         self.resize(720, 520)
         self._build_ui()
+        # The tools image's population structure methods (a choice only when it has both):
+        # given, or checked in a worker thread so the window opens at once.
+        if population_methods is not None:
+            self.set_population_methods(population_methods)
+        else:
+            self._probe = _PopulationProbe(self)
+            self._probe.done.connect(self.set_population_methods)
+            self._probe.start()
 
     def _build_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
@@ -440,6 +576,12 @@ class NewRunDialog(QtWidgets.QDialog):
         btn_row.addStretch(1)
         genomes_layout.addLayout(btn_row)
         layout.addWidget(genomes_group)
+        self._population_box = QtWidgets.QWidget()
+        self._population_box.setObjectName("PopulationMethodBox")
+        self._population_layout = QtWidgets.QVBoxLayout(self._population_box)
+        self._population_layout.setContentsMargins(0, 0, 0, 0)
+        self._population_layout.setSpacing(4)
+        layout.addWidget(self._population_box)
 
         btns = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
@@ -449,6 +591,55 @@ class NewRunDialog(QtWidgets.QDialog):
         btns.accepted.connect(self._validate_and_accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
+
+    def set_population_methods(self, available: Sequence[str]) -> None:
+        """A "Population structure" dropdown when the tools image has fastGEAR and FastBAPS
+        (default: phylo.population_method, auto meaning FastBAPS); with one method a muted
+        line names it and the run uses it, whatever the configured default; nothing when the
+        image could not be checked."""
+        from pipeline.PopulationStructure import AUTO_PREFERENCE, DEFAULT_METHOD, METHOD_LABELS
+        from pipeline.ToolEnv import configured_phylo_settings
+
+        from .settings_column import settings_combo
+
+        layout = self._population_layout
+        methods = [m for m in AUTO_PREFERENCE if m in tuple(available or ())]
+        if len(methods) == 1:
+            self.population_method = methods[0]
+            note = QtWidgets.QLabel(f"Population structure: {METHOD_LABELS[methods[0]]} (the only method in the tools image).")
+            note.setProperty("role", "muted")
+            note.setObjectName("PopulationMethodNote")
+            layout.addWidget(note)
+            return
+        if len(methods) < 2:
+            return
+        try:
+            configured = str(configured_phylo_settings().get("population_method") or DEFAULT_METHOD)
+        except ValueError:
+            configured = DEFAULT_METHOD
+        self.population_method = configured if configured in methods else methods[0]
+        tooltips = {
+            "fastgear": "fastGEAR lineages and clusters.",
+            "fastbaps": "FastBAPS clusters: lineage = Level 1, cluster = Level 2.",
+        }
+        caption = QtWidgets.QLabel("Population structure")
+        caption.setProperty("role", "settingsCaption")
+        layout.addWidget(caption)
+        combo = settings_combo(
+            self,
+            [(m, METHOD_LABELS[m], tooltips[m]) for m in methods],
+            self.population_method,
+            self._set_population_method,
+        )
+        combo.setObjectName("PopulationMethodCombo")
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(combo)
+        row.addStretch(1)
+        layout.addLayout(row)
+        self.population_combo = combo
+
+    def _set_population_method(self, method: str) -> None:
+        self.population_method = str(method)
 
     def _add_genomes(self) -> None:
         paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
@@ -546,6 +737,9 @@ class StartupDialog(QtWidgets.QDialog):
         self._active_run_id: Optional[str] = None
         # A partial run's explanation checks its expected files: once per run state.
         self._pending_cache: dict[str, tuple[tuple[str, str], Optional[str]]] = {}
+        from .run_share_dialogs import compatibility_context
+
+        self._compat = compatibility_context()
 
         self.setWindowTitle("Select Run")
         self.resize(720, 600)
@@ -598,6 +792,12 @@ class StartupDialog(QtWidgets.QDialog):
         new_run_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         new_run_btn.clicked.connect(self._open_new_run_dialog)
         btn_row.addWidget(new_run_btn)
+        import_btn = QtWidgets.QPushButton("Import Run...")
+        import_btn.setObjectName("ImportRunButton")
+        import_btn.setToolTip("Add a run someone shared with you (.zip) or a run folder")
+        import_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        import_btn.clicked.connect(self._import_run)
+        btn_row.addWidget(import_btn)
         btn_row.addStretch(1)
         cancel_btn = QtWidgets.QPushButton("Cancel")
         cancel_btn.setProperty("role", "flat")
@@ -640,6 +840,8 @@ class StartupDialog(QtWidgets.QDialog):
         return text
 
     def _load_runs(self) -> None:
+        if QtWidgets.QApplication.activePopupWidget() is not None:
+            return  # a card's More menu is open: refresh on the next tick
         prev_run_id = self.run_id
         prev_path = str(self.output_dir.resolve()) if self.output_dir else ""
         self.run_list.clear()
@@ -651,9 +853,13 @@ class StartupDialog(QtWidgets.QDialog):
             self.run_list.addItem(msg)
             return
 
+        from pipeline.RunShare import STAGING_PREFIX, is_imported_run, is_shared_run
+
         run_cfg_paths = sorted(runs_dir.rglob(RUN_CONFIG_FILENAME), reverse=True)
         seen_dirs: set[str] = set()
         for run_cfg_path in run_cfg_paths:
+            if any(part.startswith(STAGING_PREFIX) for part in run_cfg_path.relative_to(runs_dir).parts):
+                continue  # an import being unpacked
             run_cfg = None
             try:
                 payload = json.loads(run_cfg_path.read_text(encoding="utf-8"))
@@ -661,9 +867,9 @@ class StartupDialog(QtWidgets.QDialog):
                 payload = None
             if isinstance(payload, dict):
                 run_cfg = payload
-                output_dir = Path(payload.get("output_dir") or run_cfg_path.parent).expanduser().resolve()
-            else:
-                output_dir = run_cfg_path.parent.resolve()
+            # The run is where its run_config.json is: the output_dir it recorded
+            # names the folder it was made in (another one once moved or shared).
+            output_dir = run_cfg_path.parent.resolve()
             if str(output_dir) in seen_dirs:
                 continue
             seen_dirs.add(str(output_dir))
@@ -680,8 +886,11 @@ class StartupDialog(QtWidgets.QDialog):
             state = status_info.get("state")
             steps = summarize_run_steps(state if isinstance(state, dict) else None, status)
             pending_text = self._pending_text(output_dir, status_info)
-            can_view = run_allows_view(status_info)
-            can_resume = run_allows_resume(status_info)
+            shared = is_imported_run(output_dir)
+            package = is_shared_run(output_dir)
+            # A shared run opens whatever the checks found (they are shown first).
+            can_view = run_allows_view(status_info) or (package and not running)
+            can_resume = run_allows_resume(status_info) and not shared and not _viewer_mode()
             status_detail = describe_run_status(status_info, pending_text)
             status_text = _compact_run_status(
                 status_info,
@@ -712,6 +921,10 @@ class StartupDialog(QtWidgets.QDialog):
                 can_resume=can_resume,
                 pending_text=pending_text,
                 status_detail=status_detail,
+                shared=shared,
+                issues=tuple(self._run_issues(output_dir, package)),
+                metadata_label=_metadata_label(run_id, output_dir),
+                version=str((run_cfg or {}).get("bactolomew_version") or ""),
             )
             self._run_entries.append(entry)
 
@@ -731,6 +944,7 @@ class StartupDialog(QtWidgets.QDialog):
                 self._resume_run,
                 self._stop_run,
                 self.run_list,
+                on_more=self._run_action,
             )
             card.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
             # The card sits in a transparent holder whose bottom margin is the gap.
@@ -801,10 +1015,125 @@ class StartupDialog(QtWidgets.QDialog):
                 entry.status_text or entry.pending_text or "Only successful runs can be opened in the visualizer.",
             )
             return
+        from .run_share_dialogs import confirm_open_with_warnings
+
+        self._refresh_timer.stop()
+        try:
+            confirmed = confirm_open_with_warnings(self, entry.sample_set_id or entry.run_id, entry.issues)
+        finally:
+            self._refresh_timer.start()
+        if not confirmed:
+            return
         self.output_dir = entry.path
         self.run_config = entry.run_config
         self.run_id = entry.run_id
         self._validate_and_accept()
+
+    def _run_issues(self, output_dir: Path, package: bool) -> list:
+        """The run's compatibility findings; a local run's status is on its card already."""
+        from .run_share_dialogs import run_issues
+
+        try:
+            issues = run_issues(output_dir, self._compat)
+        except Exception:
+            return []
+        return [issue for issue in issues if package or issue.code != "status"]
+
+    # ------------------------------------------------------- More menu
+
+    def _run_action(self, entry: RunEntry, action: str) -> None:
+        # After the menu has closed: the refresh rebuilds the cards (and this menu).
+        QtCore.QTimer.singleShot(0, lambda: self._run_paused(self._run_action_now, entry, action))
+
+    def _run_paused(self, handler: Callable, *args) -> None:
+        """Run ``handler`` with the 5 s refresh stopped (it rebuilds every card)."""
+        self._refresh_timer.stop()
+        try:
+            handler(*args)
+        finally:
+            if self.isVisible():
+                self._refresh_timer.start()
+
+    def _run_action_now(self, entry: RunEntry, action: str) -> None:
+        handlers = {
+            "details": self._show_run_details,
+            "metadata": self._change_metadata,
+            "export": self._export_run,
+            "folder": self._show_in_folder,
+            "remove": self._remove_run,
+        }
+        handler = handlers.get(action)
+        if handler is not None:
+            handler(entry)
+
+    def _show_run_details(self, entry: RunEntry) -> None:
+        from .run_share_dialogs import RunDetailsDialog
+
+        RunDetailsDialog(entry.path, entry.issues, title=entry.sample_set_id or entry.run_id, parent=self).exec()
+
+    def _change_metadata(self, entry: RunEntry) -> None:
+        """The run's metadata CSV or its own data, remembered for the next View."""
+        from .app import _choose_metadata
+
+        _choose_metadata(entry.run_id, entry.path, parent=self)
+        self._load_runs()
+
+    def _export_run(self, entry: RunEntry) -> None:
+        from pipeline import __version__
+
+        from .run_share_dialogs import ExportRunDialog
+
+        ExportRunDialog(
+            entry.run_id,
+            entry.path,
+            title=entry.sample_set_id or entry.run_id,
+            sample_count=entry.sample_count,
+            app_version=__version__,
+            parent=self,
+        ).exec()
+
+    def _show_in_folder(self, entry: RunEntry) -> None:
+        from PyQt6 import QtGui
+
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(entry.path)))
+
+    def _remove_run(self, entry: RunEntry) -> None:
+        """Delete an imported run and its cache (only imported runs)."""
+        import shutil
+
+        from pipeline.RunShare import ShareError, remove_imported_run
+
+        from .cache import cache_root, run_cache_slug
+
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "Remove run",
+            f"Delete the imported run {entry.sample_set_id or entry.run_id}?\n{entry.path}",
+        )
+        if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        try:
+            remove_imported_run(entry.path)
+        except (OSError, ShareError) as exc:
+            QtWidgets.QMessageBox.critical(self, "Remove run", str(exc))
+            return
+        shutil.rmtree(cache_root() / run_cache_slug(entry.run_id), ignore_errors=True)
+        if self.output_dir is not None and self.output_dir == entry.path:
+            self.output_dir = None
+        self._load_runs()
+
+    def _import_run(self) -> None:
+        self._run_paused(self._import_run_now)
+
+    def _import_run_now(self) -> None:
+        from .run_share_dialogs import ImportRunDialog
+
+        dlg = ImportRunDialog(runs_root(), parent=self)
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted or dlg.result is None:
+            return
+        self.output_dir = dlg.result.path.resolve()
+        self.run_id = dlg.result.run_id
+        self._load_runs()
 
     def _validate_and_accept(self) -> None:
         errors = self._validate_inputs()
@@ -884,6 +1213,7 @@ class StartupDialog(QtWidgets.QDialog):
     def _data_input_from_run_config(self, run_cfg: dict, output_dir: Path) -> Optional["DataInput"]:
         from pipeline.ChewBBACAWorkflow import validate_chewbbaca_settings
         from pipeline.DataInput import DataInput
+        from pipeline.PopulationStructure import resume_phylo_overrides
         from pipeline.ToolEnv import (
             configured_assembly_qc_settings,
             configured_bakta_db_path,
@@ -952,6 +1282,8 @@ class StartupDialog(QtWidgets.QDialog):
                 mobsuite_config=configured_mobsuite_settings(inputs.get("mobsuite")),
                 chewbbaca_config=configured_chewbbaca_settings(inputs.get("chewbbaca")),
                 assembly_qc_config=configured_assembly_qc_settings(inputs.get("assembly_qc")),
+                # A run keeps the population structure method it used.
+                phylo_config=resume_phylo_overrides(output_dir),
                 run_id=str(run_cfg.get("run_id") or output_dir.name),
             )
             validate_chewbbaca_settings(cfg.chewbbaca_config)
@@ -1082,6 +1414,14 @@ class StartupDialog(QtWidgets.QDialog):
             errors.append("Output folder does not exist or is not a directory.")
             return errors
 
+        from pipeline.RunShare import is_shared_run
+
+        if is_shared_run(output_dir):
+            # A shared run opens with what it has (its warnings were shown).
+            if not (output_dir / RUN_CONFIG_FILENAME).is_file():
+                errors.append(f"Required file not found: {RUN_CONFIG_FILENAME}")
+            return errors
+
         from .data import validate_output_dir
 
         # Fast checks only, so "View" accepts instantly and the loading splash
@@ -1101,6 +1441,12 @@ class StartupDialog(QtWidgets.QDialog):
         SettingsDialog(self).exec()
 
     def _open_new_run_dialog(self) -> None:
+        if _viewer_mode():
+            # A viewer install sets up the pipeline first (tools image and databases).
+            from .first_time_setup import offer_pipeline_setup
+
+            if not offer_pipeline_setup(self, dev_mode=self._dev_mode):
+                return
         config = _ensure_app_config(self, dev_mode=self._dev_mode)
         if config is None:
             return
@@ -1219,6 +1565,7 @@ class StartupDialog(QtWidgets.QDialog):
                 mobsuite_config=mobsuite_config,
                 chewbbaca_config=chewbbaca_config,
                 assembly_qc_config=assembly_qc_config,
+                phylo_config={"population_method": dlg.population_method} if dlg.population_method else {},
                 run_id=run_id,
             )
         except Exception as exc:

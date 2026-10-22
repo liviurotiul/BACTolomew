@@ -31,9 +31,8 @@ from .search_suggestions import attach_count_suggestions, count_suggestions
 from .settings_column import SettingsColumn, SettingsStrip, settings_card, settings_control, stacked_field
 from .docking import layouts as dock_layouts
 from .shell.commands import (
-    APP_CHANGE_METADATA,
-    APP_PREFERENCES,
     APP_QUIT,
+    APP_RUN_LIST,
     LAYOUT_APPLY,
     LAYOUT_CLEAR_DEFAULT,
     LAYOUT_DELETE,
@@ -396,7 +395,6 @@ class ExplorerUIMixin:
         self._busy_timer.timeout.connect(self._show_busy_status)
 
         self._init_file_menu()
-        self._init_edit_menu()
         self._panel_manager.install_menus(self.menuBar())
         self._init_window_menu()
 
@@ -411,25 +409,22 @@ class ExplorerUIMixin:
         self._restore_explore_layout()
         QtCore.QTimer.singleShot(HEAVY_PANELS_START_MS, self._start_heavy_panels)
 
-    # Shell menus (plan 4.2): File (Change Metadata..., close this window, quit), Edit >
-    # Preferences and the Window menu (new and duplicate windows, New Panel...,
-    # the layouts, Show Filters, the open windows and cards). Only New
-    # Panel... has a shortcut (Ctrl+Shift+P, asked for by the user; D8 holds
-    # for everything else).
+    # Shell menus (plan 4.2): File (Run List..., close this window, quit) and the
+    # Window menu (new and duplicate windows, New Panel..., the layouts, Show
+    # Filters, the open windows and cards). Everything about runs (metadata,
+    # sharing, run details, settings) lives in the run list. Only New Panel...
+    # has a shortcut (Ctrl+Shift+P, asked for by the user; D8 holds for
+    # everything else).
 
     def _init_file_menu(self) -> None:
         file_menu = self.menuBar().addMenu("File")
         file_menu.setObjectName("FileMenu")
-        if self.app_controller.can_change_metadata():
-            metadata_action = file_menu.addAction("Change Metadata...")
-            metadata_action.setObjectName("ChangeMetadataAction")
-            metadata_action.setToolTip(
-                "Choose this run's metadata CSV or use the run's own data; the run's windows reopen with it"
-            )
-            metadata_action.triggered.connect(
-                lambda _c=False: self.app_controller.commands.run(APP_CHANGE_METADATA, self)
-            )
-            metadata_action.setMenuRole(QtGui.QAction.MenuRole.NoRole)
+        if self.app_controller.can_open_run_list():
+            run_list_action = file_menu.addAction("Run List...")
+            run_list_action.setObjectName("RunListAction")
+            run_list_action.setToolTip("Close this run's windows and choose a run")
+            run_list_action.triggered.connect(lambda _c=False: self.app_controller.commands.run(APP_RUN_LIST, self))
+            run_list_action.setMenuRole(QtGui.QAction.MenuRole.NoRole)
             file_menu.addSeparator()
         close_action = file_menu.addAction("Close Window")
         close_action.setObjectName("CloseWindowAction")
@@ -444,15 +439,6 @@ class ExplorerUIMixin:
         for action in (close_action, quit_action):
             action.setMenuRole(QtGui.QAction.MenuRole.NoRole)
         self._file_menu = file_menu
-
-    def _init_edit_menu(self) -> None:
-        edit = self.menuBar().addMenu("Edit")
-        edit.setObjectName("EditMenu")
-        preferences = edit.addAction("Preferences...")
-        preferences.setObjectName("PreferencesAction")
-        preferences.setToolTip("Compute limits and cgMLST schemas (the settings of new runs)")
-        preferences.triggered.connect(lambda _c=False: self.app_controller.commands.run(APP_PREFERENCES, self))
-        self._edit_menu = edit
 
     def _init_window_menu(self) -> None:
         menu = self.menuBar().addMenu("Window")

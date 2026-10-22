@@ -135,11 +135,11 @@ class RunProgressViewsTests(unittest.TestCase):
         startup_dialog.runs_root = self._runs_root
         self._tmp.cleanup()
 
-    def _run(self, name: str, state: dict, *, lock: bool = False) -> Path:
+    def _run(self, name: str, state: dict, *, lock: bool = False, recorded: str = "") -> Path:
         out = self.root / name / f"{name}__run"
         out.mkdir(parents=True)
         (out / "run_config.json").write_text(
-            json.dumps({"run_id": out.name, "sample_set_id": name, "output_dir": str(out),
+            json.dumps({"run_id": out.name, "sample_set_id": name, "output_dir": recorded or str(out),
                         "inputs": {"genomes": ["/x/a.fna", "/x/b.fna"]}})
         )
         (out / "run_state.json").write_text(json.dumps(state))
@@ -161,7 +161,7 @@ class RunProgressViewsTests(unittest.TestCase):
             self.assertNotIn("Running", texts)
             self.assertTrue(any(t.startswith("Step 2 of 16 · Bakta annotation · ") and t.endswith("37/153 genomes") for t in texts))
             buttons = {b.text() for b in card.findChildren(QtWidgets.QPushButton)}
-            self.assertEqual(buttons, {"View", "Monitor", "Resume", "Stop", "Force Stop"})
+            self.assertEqual(buttons, {"View", "Monitor", "Resume", "Stop", "Force Stop", "More"})
         finally:
             dlg.close()
 
@@ -239,6 +239,23 @@ class RunProgressViewsTests(unittest.TestCase):
                 self.assertEqual(entry.status_text, "Stopped. Click Resume to continue.")
             old = next(e for e in dlg._run_entries if e.sample_set_id == "sample_old")
             self.assertEqual((old.steps.finished, old.steps.total), (1, 16))
+        finally:
+            dlg.close()
+
+    def test_a_moved_run_is_listed_where_it_is_now(self) -> None:
+        # run_config.json names the folder the run was made in, on another machine.
+        out = self._run("sample_moved", {"status": "stopped"}, recorded="/elsewhere/sample_moved__run")
+        dlg = startup_dialog.StartupDialog()
+        try:
+            dlg._refresh_timer.stop()
+            entry = dlg._run_entries[0]
+            self.assertEqual(entry.path, out.resolve())
+            self.assertFalse(entry.shared)
+            self.assertTrue(entry.metadata_label.startswith("Metadata: "))
+            card = dlg._card(dlg.run_list.item(0))
+            more = next(b for b in card.findChildren(QtWidgets.QPushButton) if b.text() == "More")
+            texts = [a.text() for a in more.menu().actions()]
+            self.assertEqual(texts, ["Run Details...", "Change Metadata...", "Export for Sharing...", "Show in Folder"])
         finally:
             dlg.close()
 

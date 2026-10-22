@@ -1,6 +1,6 @@
 # Publishing the tool image
 
-This is the checklist for publishing `bactolomew-tools` to a registry, and (last section)
+This is the checklist for publishing the tools image `liviurotiul/bactolomew` to Docker Hub, and (last section)
 for minting the code DOI. None of it has been run yet: no image is pushed, no registry login
 exists, and this machine's `bactolomew_config.json` still names the local `bactolomew-tools:0.1.0`.
 
@@ -11,9 +11,20 @@ makes `DB/` with empty catalogs and the shipped cgMLST scheme species catalog.
 
 ## Version and tag
 
-Decided 2026-10-21: the first public release is 0.2.0. `__version__` in
-`src/pipeline/__init__.py`, `TOOLS_IMAGE` in `src/pipeline/ToolEnv.py`, `docker/build.sh`
-and `src/scripts/demo_install.py` all name 0.2.0; tag the GitHub release `v0.2.0`.
+Decided 2026-10-21: the first public release is 0.2.0. At commit `d0951e9`, `__version__`
+in `src/pipeline/__init__.py`, `TOOLS_IMAGE` in `src/pipeline/ToolEnv.py` and
+`src/scripts/demo_install.py` name 0.2.0; tag the GitHub release `v0.2.0`. The working tree
+names 0.3.0.dev0 and `bactolomew:0.3.0`.
+
+**The 0.2.0 image is built from commit `d0951e9`** (pushed to `origin/main`; `docker/` last
+changed in `8142861`). The working tree's `docker/` now holds the 0.3.0 changes (FastBAPS,
+`population_methods`, the per-platform locks with the common tool configuration below), so a
+build from it is not the tested 0.2.0: `docker/build.sh` defaults to `0.3.0-dev`, and steps
+2 and 3 below run in a separate worktree of `d0951e9`. The in-app fallback build
+(`container.build_on_missing`, `ContainerRuntime.build_image_local`) builds the working
+tree's Dockerfile under the configured tag; the working tree's `TOOLS_IMAGE` is
+`bactolomew:0.3.0`, so it never puts new content under the 0.2.0 tag unless a
+config names 0.2.0 and that image is missing locally.
 Two local images exist: `bactolomew-tools:0.1.0` (29.3 GB, the image the reference run used)
 and `bactolomew-tools:0.2.0` (22.2 GB, the tested rebuild from the locks). Until a published
 image is configured, setup builds the image named by `TOOLS_IMAGE` locally from the current
@@ -23,18 +34,18 @@ Dockerfile (`container.build_on_missing` defaults to true).
 
 | Piece | Where |
 | --- | --- |
-| Exact package locks, one per env (`conda list --explicit --md5`, exported from 0.1.0) | `docker/locks/<env>.lock` |
-| Readable tool version summary (copied into the image as `/opt/bactolomew/tool_versions.json`) | `docker/locks/tool_versions.json` |
-| Dockerfile installing from the locks, base images pinned by digest, OCI labels | `docker/Dockerfile` |
-| Env install and trim step (one layer per env group) | `docker/install_envs.sh` |
-| Build-time checks: MATLAB runtime system libraries present, mob_suite database files equal to recorded sha256s; writes `/opt/bactolomew/image_contents.json` and `apt_packages.tsv` | `docker/verify_image.sh`, `docker/locks/mobsuite_db.sha256` |
-| Build script (version argument, labels, `linux/amd64`, no credentials in labels, fastgear mirror override, prints the image ID) | `docker/build.sh` |
-| Solving envs from their yamls (new locks after a tool change) | `docker/Dockerfile.solve` |
-| Lock regeneration from a built image | `docker/update_locks.sh`, `docker/make_tool_versions.py` |
-| Tool runs on a tiny input set in two images, outputs compared | `docker/smoke_compare.sh` |
+| Exact package locks per platform and env (from 0.3.0; explicit `url#md5` lists, plus PyPI wheels and R sources pinned by sha256 where an env needs them) | `docker/locks/linux-64/`, `docker/locks/linux-aarch64/` |
+| Solving the yamls for both platforms with the same versions (throwaway miniforge container, `mamba --dry-run --platform`, no emulation), the lock check, the summary | `docker/update_locks.sh`, `docker/solve_locks.py`, `docker/check_locks.py`, `docker/make_tool_versions.py` |
+| Readable tool version summary of the locks (its notes are copied into the image) | `docker/locks/tool_versions.json` |
+| Dockerfile installing from the target platform's locks (picked from `TARGETARCH`), base images pinned by digest, OCI labels | `docker/Dockerfile` |
+| Env install and trim step (one layer per env group; pip wheels and R sources after the conda packages) | `docker/install_envs.sh` |
+| Build-time checks: the population structure methods present (FastBAPS required, fastGEAR when included), the MATLAB runtime system libraries with fastGEAR, mob_suite database files equal to recorded sha256s; writes `/opt/bactolomew/image_contents.json` (with `population_methods`), `apt_packages.tsv` and `tool_versions.json` (the envs really installed) | `docker/verify_image.sh`, `docker/locks/mobsuite_db.sha256` |
+| Build script (`--platform`, default the Docker engine's own, version argument, labels, fastGEAR only on amd64 or `FASTGEAR=none`, the label `org.bactolomew.population_methods`, failing unless the methods are `fastgear,fastbaps` on amd64 and `fastbaps` otherwise, no credentials in labels, fastgear mirror override, prints the image ID) | `docker/build.sh` |
+| Checking a built image against its platform's locks | `docker/update_locks.sh --check-image <image>` |
+| Tool runs on a tiny input set in two images, outputs compared (both here, or one image per machine and a compare) | `docker/smoke_compare.sh` |
 | Build context limited to the files the Dockerfile copies (about 260 KB) | `.dockerignore` |
 | Digest pinning in `container.image` (`name:tag@sha256:...`), with a warning on mismatch | `src/pipeline/ContainerRuntime.py` |
-| Image acquisition: pull any reference that names a registry (Docker and Singularity), build locally only when `container.build_on_missing` is true | `src/pipeline/ContainerRuntime.py` |
+| Image acquisition: pull any reference that names a registry (Docker and Singularity), build locally only when `container.build_on_missing` is true; pulls and builds use the engine's own platform (`linux/amd64` or `linux/arm64`, `engine_platform`), and only an amd64 build includes fastGEAR | `src/pipeline/ContainerRuntime.py` |
 | Run provenance: `environment` (image, tool versions, databases) and `environment_history` in `run_config.json` and `run_report.json` | `src/pipeline/Runner.py` |
 
 Why a new version instead of pushing 0.1.0: the local 0.1.0 was built from an older
@@ -43,13 +54,94 @@ link), so the current Dockerfile does not describe it, and it has no
 `/opt/bactolomew/tool_versions.json`. Version 0.2.0 is built from the locks, so it carries
 the same tool versions as 0.1.0 (see `tool_versions.json`), with a matching Dockerfile.
 
+## Population structure methods (from 0.3.0)
+
+From 0.3.0 the image always holds FastBAPS, and on linux/amd64 fastGEAR too; the pipeline picks one per run
+(`phylo.population_method`: fastbaps (the default), fastgear or auto, which takes FastBAPS
+when the image has it, else fastGEAR; see `src/pipeline/PopulationStructure.py`). Left
+unset, the default falls back to fastGEAR on an image without FastBAPS (0.2.0 and older);
+a method set in the config or for the run is required. Runs made before FastBAPS, and runs
+that recorded fastGEAR, keep fastGEAR when resumed.
+
+- FastBAPS is the `fastbaps` env on every platform: R 4.4.3 and fastbaps's dependencies
+  from conda, `genie` 1.0.7 (CRAN) and `fastbaps` 1.0.8 (GitHub tag `v1.0.8`) built from
+  source by `install_envs.sh` (`docker/locks/<platform>/fastbaps.r_source.tsv`, checked by
+  sha256; each tarball lists a second URL, a CRAN mirror or GitHub's codeload, in case
+  one host is down), because bioconda's r-fastbaps 1.0.8 and r-genie are linux-64 only. As
+  the default method it is required: a failed download or source build fails the build,
+  so no image without FastBAPS is built from these files. Its layer comes after the other
+  envs.
+- fastGEAR comes from the fastgear image (MATLAB runtime, x86_64 only), so it is included
+  only for `linux/amd64` (`FASTGEAR=none` leaves it out there too). It is the only part of
+  the image that differs by platform.
+- `verify_image.sh` records the methods present in `/opt/bactolomew/image_contents.json`
+  (`"population_methods": ["fastgear", "fastbaps"]`) and fails without FastBAPS;
+  `build.sh` fails unless they are `fastgear,fastbaps` (linux/amd64) or `fastbaps`
+  (linux/arm64, `FASTGEAR=none`), then adds them as the label
+  `org.bactolomew.population_methods` (a metadata-only image on top of the build). Before
+  releasing an amd64 image, check that the build ended with
+  `[build] done: ... (population methods: fastgear,fastbaps)`. The pipeline reads the label, else the file,
+  else (images before 0.3.0) takes fastGEAR when its files are in the image.
+
+## One tool configuration on every platform (from 0.3.0)
+
+Decided 2026-10-22: linux/amd64 and linux/arm64 use the same configuration wherever
+possible; where linux-aarch64 is more restrictive, its configuration is used on both.
+`docker/check_locks.py` fails on any version difference between `docker/locks/linux-64` and
+`docker/locks/linux-aarch64` other than the platform-only packages it lists by name (a
+metapackage and packaging splits, no tool). What this changes against 0.2.0 (on x86 too):
+
+- **QUAST and CheckM2 in two envs**, `quast` (QUAST 5.3.0, Python 3.13) and `checkm2`
+  (CheckM2 1.1.0 with TensorFlow 2.18.0, Python 3.12): on aarch64 quast 5.3.0 needs Python
+  3.13 and checkm2's TensorFlow builds stop at Python 3.12. scikit-learn is pinned at
+  1.6.1 (as in 0.2.0), the version CheckM2's pickled MinMaxScaler was saved with: a newer
+  one warns (`InconsistentVersionWarning`) that the model may give invalid results. The
+  pipeline calls each tool in its own env and falls back to the old `assembly_qc` env in
+  images before 0.3.0 (`ToolEnv.LEGACY_TOOL_ENVS`).
+- **BLAST 2.16.0 everywhere** (bakta, mobsuite, chewbbaca, mlst, quast): the only version
+  built for aarch64. trnascan-se stays 2.0.12, raxml-ng stays 1.2.2 (phylogeny) and 2.0.2
+  (gubbins), all built for both.
+- **Panaroo 1.8.0 without its dependencies**: intbitset has no aarch64 conda build, so
+  the env holds the recipe's other dependencies from conda, `intbitset` 4.1.2 from PyPI
+  (manylinux wheels for both, sha256 in `panaroo.pip.txt`) and the panaroo package itself
+  (`x-bactolomew: no_deps` in `yamls/panaroo.yaml`). prokka is no longer in the env (the
+  pipeline never used it; panaroo 1.8.0's current build does not ask for it).
+- **Snippy 4.6.0 without its dependencies**: its recipe pins vcflib <= 1.0.2 and tabixpp
+  1.1.0, not built for aarch64. The env holds vcflib 1.0.9 (it still has the vcf programs
+  snippy calls) and `perl-bioperl-core` in place of the perl-bioperl bundle (whose aarch64
+  build pulls samtools 0.1.19), with samtools 1.20, bwa 0.7.18 and minimap2 2.28.
+- **mlst 2.35.0 without its dependencies**: its recipe asks for perl-bioperl, which mlst
+  never loads and which pulls samtools 0.1.19 built against different zlib and OpenSSL
+  versions per platform.
+- **FastBAPS built from source** on both (above), with its R dependencies genie 1.0.7,
+  genieclust 1.2.0 and quitefastmst 0.9.2 (CRAN sources checked by sha256, see
+  `yamls/fastbaps.yaml`), because their bioconda/conda-forge builds are linux-64 only.
+
+`bactolomew:0.3.0` (2026-10-22, local only, linux/amd64, image ID
+`sha256:b918a55d6c3e`, 19.5 GB, fastGEAR and FastBAPS) is built from these locks
+(`update_locks.sh --check-image`: 0 differences). Against 0.2.0 on the smoke inputs (step 4)
+every output is the same: Snippy, RAxML-NG, IQ-TREE, Gubbins (tree and recombination),
+Panaroo, chewBBACA, mlst and QUAST; the pipeline's assembly QC step (QUAST and CheckM2,
+TensorFlow 2.18.0 against 2.17.0, scikit-learn 1.6.1 in both, so no `InconsistentVersionWarning`)
+gave the same summary on two genomes. FastBAPS built
+from source gave the same clusters as bioconda's linux-64 binary, on the smoke alignment
+and on the 153-genome reference core alignment. The image is 2.7 GB smaller than 0.2.0
+(prokka and its dependencies left the panaroo env). linux/arm64 is not built yet (below);
+its locks were checked only by solving and by fetching every package URL (all served).
+
+The yamls hold the intent (tools and key versions, the `no_deps` packages, the pip and R
+source pins in an `x-bactolomew` block that conda ignores). Native (non-container)
+installs create envs from the yamls with `conda env create`, which does not read that
+block: they lack panaroo, snippy, mlst and fastbaps. The container image is the supported
+way to run the pipeline.
+
 ## Size
 
 0.1.0 is 29.3 GB. The Dockerfile applies only the reductions that cannot change what a
 tool does:
 
 - envs grouped per layer so shared packages are stored once (about -5 GB):
-  `assembly_qc bakta gubbins phylogeny mafft` (about 6.8 GB), `panaroo chewbbaca mlst diamond`
+  `quast checkm2 bakta gubbins phylogeny mafft` (about 6.8 GB), `panaroo chewbbaca mlst diamond`
   (about 7.2 GB), `mobsuite` alone (about 5.1 GB with its database). Every layer stays
   under 10 GB uncompressed;
 - the conda package cache removed in the same layer (about -2 GB);
@@ -66,55 +158,55 @@ Deferred on purpose, each needs a smoke test or a behavior decision first:
   `mobsuite.database_directory` must be set (route B).
 - prokka and barrnap in the panaroo env (about 2.2 GB): unused by the pipeline, but
   removing them needs a panaroo run on a small set.
-- compilers and sysroot that R and k8 pull into gubbins, assembly_qc and phylogeny
+- compilers and sysroot that R and k8 pull into gubbins, quast, phylogeny and fastbaps
   (about 1 GB): needs a gubbins and quast/minimap2 smoke test.
 - `share/locale`, `include/`, test folders inside site-packages. Never delete `*.pyc`.
 
 ## Steps to publish (in order)
 
-### 1. Choose the registry
+### 1. The registry
 
-- **GHCR** (`ghcr.io/liviurotiul/bactolomew-tools`): free for public images, tied to the
-  GitHub repo (the `org.opencontainers.image.source` label links the package to it). Check
-  the current per-layer size limit before pushing (reported as about 10 GB; the largest
-  layer here is about 7 GB uncompressed).
-- Docker Hub or Quay.io work the same way; Docker Hub has pull rate limits for anonymous
-  users.
-- The code DOI comes from the GitHub to Zenodo link (last section). Archiving the image
-  itself on Zenodo (`docker save | gzip`, about the compressed image size) is optional.
+Docker Hub, repository `liviurotiul/bactolomew` (public; anonymous pulls are rate limited,
+about 100 per 6 hours per IP, which is plenty for installs). The fastGEAR base image is
+mirrored as `liviurotiul/fastgear:2022-12-01`. Published so far: `0.2.0` (release v0.2.0,
+commit 8142861) and `0.3.0`.
 
-The steps below assume GHCR; `IMAGE=ghcr.io/liviurotiul/bactolomew-tools`.
+The steps below use `IMAGE=liviurotiul/bactolomew`.
 
-### 2. Commit and push the source, then build
+### 2. Build 0.2.0 from its commit
 
 The local test image `bactolomew-tools:0.2.0` was built from an uncommitted tree: its
 `org.opencontainers.image.revision` label is `d11b88d...-dirty`, which names no commit. Do
-not publish it. Instead:
-
-1. Commit `docker/`, `yamls/` and `.dockerignore` (build.sh appends `-dirty`, and warns,
-   when those paths have local changes).
-2. Push that commit to `origin`, so the `revision` label resolves on GitHub.
-3. Rebuild with the same build.sh, **without pruning the Docker build cache first**
-   (no `docker builder prune`, no `docker system prune`). BuildKit then reuses the cached
-   apt and env layers of the tested 0.2.0, so the tools and the mob_suite database are
-   byte-identical to what was smoke-tested. A pruned cache fetches the apt packages and the
-   mob_suite database again, with different content (see below).
+not publish it. Its `docker/` was then committed and pushed as part of `8142861`
+(`origin/main` is at `d0951e9`). Do not build 0.2.0 from the working tree: it holds the
+0.3.0 changes (FastBAPS, see "Population structure methods"). Build it from a detached
+worktree of `d0951e9` (no branch is created; build.sh labels the image with that clean
+commit), **without pruning the Docker build cache first** (no `docker builder prune`, no
+`docker system prune`). BuildKit then reuses the cached apt and env layers of the tested
+0.2.0, so the tools and the mob_suite database are byte-identical to what was smoke-tested.
+A pruned cache fetches the apt packages and the mob_suite database again, with different
+content (see below).
 
 ```bash
-bash docker/build.sh 0.2.0 ghcr.io/liviurotiul/bactolomew-tools
-docker image ls ghcr.io/liviurotiul/bactolomew-tools
-docker image inspect --format '{{json .Config.Labels}}' ghcr.io/liviurotiul/bactolomew-tools:0.2.0
+git worktree add --detach ../BACTolomew-0.2.0 d0951e9
+cd ../BACTolomew-0.2.0
+bash docker/build.sh 0.2.0 liviurotiul/bactolomew
+docker image ls liviurotiul/bactolomew
+docker image inspect --format '{{json .Config.Labels}}' liviurotiul/bactolomew:0.2.0
 ```
 
-The Dockerfile changed after the tested 0.2.0 was built, only after the env layers, so the
-rebuild redoes only the layers from the `tool_versions.json` copy on (that file gained a
-note; the fastGEAR copy that follows is the same content): the image-wide
-`LD_LIBRARY_PATH` is gone (the MATLAB runtime's 2016 libstdc++, libgcc_s, libssl and others
-no longer shadow the system and conda libraries; fastGEAR's launcher sets its own path,
-and fastGEAR on its example data gave identical output with and without the variable), and
-`docker/verify_image.sh` runs as a new layer. Check the build log shows `CACHED` for the
-`install_envs.sh` steps; if it does not, the env layers were rebuilt and step 4 must be
-repeated in full.
+The revision label must read `d0951e9...` without `-dirty`, and there must be no
+`org.bactolomew.population_methods` label (that comes from 0.3.0's build.sh).
+
+The Dockerfile at `d0951e9` differs from the one the tested 0.2.0 was built with only after
+the env layers, so the rebuild redoes only the layers from the `tool_versions.json` copy on
+(that file gained a note; the fastGEAR copy that follows is the same content): the
+image-wide `LD_LIBRARY_PATH` is gone (the MATLAB runtime's 2016 libstdc++, libgcc_s, libssl
+and others no longer shadow the system and conda libraries; fastGEAR's launcher sets its
+own path, and fastGEAR on its example data gave identical output with and without the
+variable), and `docker/verify_image.sh` runs as a new layer. Check the build log shows
+`CACHED` for the `install_envs.sh` steps; if it does not, the env layers were rebuilt and
+step 4 must be repeated in full.
 
 The build needs network access to conda-forge, bioconda and Docker Hub (and Zenodo and
 NCBI when the mob_suite layer is rebuilt). It always builds `linux/amd64` (the locks and
@@ -123,24 +215,31 @@ the MATLAB runtime are x86_64 only), also on an arm64 host. It does not touch
 
 ### 3. Check the build matches the locks
 
+In the same worktree (its `update_locks.sh` and `make_tool_versions.py` are the 0.2.0 ones;
+the working tree's version would treat 0.2.0 as a partial export, since 0.2.0 has no
+fastbaps env, and would not give the result below):
+
 ```bash
-bash docker/update_locks.sh ghcr.io/liviurotiul/bactolomew-tools:0.2.0
+bash docker/update_locks.sh liviurotiul/bactolomew:0.2.0
 git diff --stat -- docker/locks
 ```
 
 The `.lock` files must be unchanged; only `locks_exported_from` in `tool_versions.json`
-changes. Keep that change (it now names the published image) or discard it with
-`git checkout -- docker/locks/tool_versions.json`.
+changes. Discard that change in the worktree (`git checkout -- docker/locks/tool_versions.json`);
+step 6 records the published image where it belongs.
 
 This check reads `conda-meta`, so it holds by construction (the envs were installed from
 those locks) and cannot see the files `install_envs.sh` deleted after install (static
 libraries in `lib/`, docs). It shows the right packages went in, not that the tools still
 work: step 4 is the evidence for that.
 
+Steps 4 to 7 use the image only, so they can run from either tree. Remove the worktree once
+0.2.0 is pushed: `git worktree remove ../BACTolomew-0.2.0`.
+
 ### 4. Smoke test
 
 ```bash
-I=ghcr.io/liviurotiul/bactolomew-tools:0.2.0
+I=liviurotiul/bactolomew:0.2.0
 for c in "bakta bakta --version" "bakta amrfinder --version" "diamond diamond version" \
          "mobsuite mob_recon --version" "phylogeny snippy --version" "phylogeny raxml-ng --version" \
          "gubbins run_gubbins.py --version" "gubbins iqtree2 --version" "panaroo panaroo --version" \
@@ -180,29 +279,32 @@ config.
 ### 5. Log in and push
 
 ```bash
-# A classic personal access token with write:packages (and read:packages)
-echo "$GHCR_TOKEN" | docker login ghcr.io -u liviurotiul --password-stdin
-docker push ghcr.io/liviurotiul/bactolomew-tools:0.2.0
+# A Docker Hub personal access token with Read & Write access
+# (hub.docker.com > Account settings > Personal access tokens)
+docker login -u liviurotiul          # paste the token as the password
+docker push liviurotiul/bactolomew:0.3.0
 ```
 
-On GitHub, Packages > bactolomew-tools > Package settings: set the visibility to public.
+A new Docker Hub repository is public by default; check it under Repositories.
 
 ### 6. Record the digest
 
 ```bash
-docker image inspect --format '{{index .RepoDigests 0}}' ghcr.io/liviurotiul/bactolomew-tools:0.2.0
-# ghcr.io/liviurotiul/bactolomew-tools@sha256:<digest>
+docker image inspect --format '{{index .RepoDigests 0}}' liviurotiul/bactolomew:0.2.0
+# liviurotiul/bactolomew@sha256:<digest>
 ```
 
-Write the digest into `docker/locks/tool_versions.json` (`locks_exported_from`), the README
-and the release notes. Optionally tag the commit (`git tag tools-0.2.0`).
+Write the digest into the README and the release notes, and into the main tree's
+`docker/locks/tool_versions.json` (`locks_exported_from`: the locks are the 0.2.0 ones;
+the fastbaps entry keeps its own `exported_from`). Optionally tag the commit the image was
+built from (`git tag tools-0.2.0 d0951e9`).
 
 ### 7. Check a clean pull
 
 On another machine, or after `docker image rm` of the pushed tag only:
 
 ```bash
-docker pull ghcr.io/liviurotiul/bactolomew-tools:0.2.0@sha256:<digest>
+docker pull liviurotiul/bactolomew:0.2.0@sha256:<digest>
 ```
 
 ### 8. Singularity / Apptainer (HPC)
@@ -212,10 +314,10 @@ With `runtime: "singularity"`, `container.image` set to the full reference (step
 (`singularity pull <sif_path> docker://<image>`); no Docker daemon is needed. By hand:
 
 ```bash
-singularity pull bactolomew-tools_0.2.0.sif \
-    docker://ghcr.io/liviurotiul/bactolomew-tools:0.2.0@sha256:<digest>
+singularity pull bactolomew_0.3.0.sif \
+    docker://liviurotiul/bactolomew:0.3.0@sha256:<digest>
 # or, from a local Docker image:
-singularity build bactolomew-tools_0.2.0.sif docker-daemon://ghcr.io/liviurotiul/bactolomew-tools:0.2.0
+singularity build bactolomew_0.3.0.sif docker-daemon://liviurotiul/bactolomew:0.3.0
 ```
 
 The `.sif` is about the compressed size of the image; build it on a filesystem with room
@@ -229,7 +331,7 @@ announcing it.
 
 ```json
 "container": {
-  "image": "ghcr.io/liviurotiul/bactolomew-tools:0.2.0@sha256:<digest>",
+  "image": "liviurotiul/bactolomew:0.2.0@sha256:<digest>",
   "registry": "",
   "sif_path": "",
   "build_on_missing": false
@@ -259,13 +361,90 @@ In the code, bump the default image for new installs:
 
 ## Changing a tool version later
 
-1. Edit `yamls/<env>.yaml` (the intent).
-2. Solve the changed envs from their yamls:
-   `docker build --platform linux/amd64 -f docker/Dockerfile.solve --build-arg ENVS="<env> ..." -t bactolomew-solve:tmp .`
-3. `bash docker/update_locks.sh bactolomew-solve:tmp` and review `git diff -- docker/locks`
-   (only the solved envs and `base` get new locks; `tool_versions.json` keeps the others).
-4. Build the real image with `docker/build.sh <new version>`, run step 4 against the
-   previous version, and publish as above.
+1. Edit `yamls/<env>.yaml` (pin the tool and the dependencies whose version matters).
+2. `bash docker/update_locks.sh <env> ...` (no argument: every env). It solves the yamls
+   for linux-64 and linux-aarch64 in a throwaway `condaforge/miniforge3` container (the
+   same base as the Dockerfile, `mamba create --dry-run --platform`: nothing is installed,
+   no emulation), pins both platforms to the same versions, writes both lock folders, runs
+   `docker/check_locks.py` and rewrites `tool_versions.json`. A difference the solver
+   cannot remove makes the check fail: pin a version both platforms have in the yaml (or
+   use `no_deps` as panaroo, snippy and mlst do), or, for a package that only exists on one
+   platform and holds no tool, add it to `PLATFORM_ONLY` in `check_locks.py` with the reason.
+3. Review `git diff -- docker/locks yamls`.
+4. Build with `docker/build.sh <new version>`, check it with
+   `bash docker/update_locks.sh --check-image <image>` (the installed envs equal the
+   platform's locks), run the smoke test (step 4) against the previous version, and
+   publish as above.
+
+## Building on Apple Silicon (arm64)
+
+Not done yet: this machine is x86_64 and does not emulate arm64. The arm64 image is
+built natively on an Apple Silicon Mac with Docker Desktop, from the same commit as the
+x86 image, and its outputs are compared with the x86 image's on the same tiny inputs.
+
+**Docker Desktop settings** (Settings > Resources): memory at least 16 GB (Docker Desktop
+gives its Linux VM only part of the Mac's RAM by default, often half; the build needs about
+8 GB, Bakta and Panaroo on real data more), swap 2 GB or more, and a virtual disk limit of
+at least 120 GB (the image is about 20 GB and the build cache as much again; the smoke test
+needs little). Settings > General: "Use Virtualization framework" on (the default); Rosetta is
+not needed for the arm64 build (it would only run the x86 image).
+
+**Build** (in a clone of the repository at the commit to build; nothing is pushed):
+
+```bash
+docker version --format '{{.Server.Arch}}'        # arm64
+bash docker/build.sh --platform linux/arm64 0.3.0-dev
+# the same: bash docker/build.sh 0.3.0-dev (the default is the engine's own platform)
+docker image ls bactolomew:0.3.0
+docker image inspect --format '{{.Architecture}} {{json .Config.Labels}}' bactolomew:0.3.0
+```
+
+The build installs `docker/locks/linux-aarch64/` (the Dockerfile picks it from
+`TARGETARCH`), skips fastGEAR, and must end with
+`[build] done: bactolomew:0.3.0 (population methods: fastbaps)`. Expect about an
+hour (the conda packages, the mob_suite database and the FastBAPS source build).
+
+**Check the build and the tools**:
+
+```bash
+bash docker/update_locks.sh --check-image bactolomew:0.3.0    # 0 differences
+I=bactolomew:0.3.0
+for c in "bakta bakta --version" "bakta amrfinder --version" "diamond diamond version" \
+         "mobsuite mob_recon --version" "phylogeny snippy --version" "phylogeny raxml-ng --version" \
+         "gubbins run_gubbins.py --version" "gubbins iqtree2 --version" "panaroo panaroo --version" \
+         "chewbbaca chewBBACA.py --version" "mlst mlst --version" "quast quast.py --version" \
+         "checkm2 checkm2 --version" "mafft mafft --version"; do
+    set -- $c; docker run --rm --network none "$I" conda run -n "$1" "${@:2}" 2>&1 | tail -1
+done
+docker run --rm --network none "$I" conda run -n fastbaps Rscript -e 'packageVersion("fastbaps")'
+docker run --rm --network none "$I" conda run -n checkm2 python -c 'import tensorflow as tf; print(tf.__version__)'
+docker run --rm --network none "$I" cat /opt/bactolomew/image_contents.json
+docker run --rm --network none "$I" cat /opt/bactolomew/tool_versions.json > tool_versions_arm64.json
+```
+
+**Compare the outputs with the x86 image**: copy the smoke inputs (four Bakta GFF3s and
+their contigs, the Snippy reference and the core alignment; about 45 MB, the folder that
+`smoke_compare.sh` describes) from the Linux machine, run the arm64 image on them, and
+compare with the x86 image's outputs from the same inputs:
+
+```bash
+# on the Mac
+bash docker/smoke_compare.sh --run bactolomew:0.3.0 smoke_inputs smoke_arm64
+# on the x86 machine, the same inputs and the x86 image of the same commit
+bash docker/smoke_compare.sh --run bactolomew:0.3.0 smoke_inputs smoke_amd64
+# either machine, with both output folders
+bash docker/smoke_compare.sh --compare smoke_amd64 smoke_arm64
+```
+
+Every line should read `SAME`. A `DIFFERS` line is not necessarily a bug (floating point
+or thread scheduling can change a tree's last digits or a tie between equally good
+trees), but each needs a look: diff the two files and compare the trees' topologies.
+
+**Report back**: the build log's last 50 lines and its duration, the image ID and size,
+the `--check-image` result, the version lines above, `tool_versions_arm64.json`, the
+`--compare` output, and for each `DIFFERS` the diff. If the build fails, the failing step
+and its log; a FastBAPS download or source build error fails the `install_envs.sh fastbaps`
+step, with the R error in the log.
 
 ## The mob_suite database
 
@@ -298,7 +477,7 @@ needs services outside this repository:
   even with the digest pinned. A local `docker save` copy keeps it buildable here, and a
   mirror in our own registry is the fix for everyone else (see "Mirroring fastGEAR" below).
   A build uses the mirror with
-  `FASTGEAR_IMAGE=ghcr.io/liviurotiul/fastgear:2022-12-01@sha256:<digest> bash docker/build.sh`.
+  `FASTGEAR_IMAGE=liviurotiul/fastgear:2022-12-01@sha256:<digest> bash docker/build.sh`.
 - **conda.anaconda.org** must keep serving every URL in the locks.
 - **Ubuntu's archive**: the apt layer installs what Ubuntu 24.04 serves on the build date
   (unpinned; 27 packages already differ between 0.1.0 and 0.2.0). Every installed package
@@ -331,12 +510,12 @@ The mirror, when there is a registry login:
 ```bash
 F=pgcbioinfo/fastgear:latest@sha256:afb299e7fb327129ebf2acc1bcae00e0a54cd6fbe71d114d0a9f1642a2216b79
 docker pull "$F"     # or: docker load -i fastgear_2022-12-01.tar.gz; F=pgcbioinfo/fastgear:latest
-docker tag "$F" ghcr.io/liviurotiul/fastgear:2022-12-01
-docker push ghcr.io/liviurotiul/fastgear:2022-12-01
-docker image inspect --format '{{json .RepoDigests}}' ghcr.io/liviurotiul/fastgear:2022-12-01
+docker tag "$F" liviurotiul/fastgear:2022-12-01
+docker push liviurotiul/fastgear:2022-12-01
+docker image inspect --format '{{json .RepoDigests}}' liviurotiul/fastgear:2022-12-01
 ```
 
-Then pin the mirror (`ghcr.io/liviurotiul/fastgear:2022-12-01@sha256:<digest>`) as the
+Then pin the mirror (`liviurotiul/fastgear:2022-12-01@sha256:<digest>`) as the
 Dockerfile's `FASTGEAR_IMAGE` default and as `DEFAULT_FASTGEAR_IMAGE`, and make the package
 public.
 

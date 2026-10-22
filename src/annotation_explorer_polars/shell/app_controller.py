@@ -49,7 +49,7 @@ class AppController(QtCore.QObject):
         engine: Optional[QueryEngine] = None,
         *,
         manage_quit: bool = False,
-        change_metadata: Optional[Callable[["AppController", QtWidgets.QWidget], None]] = None,
+        open_run_list: Optional[Callable[["AppController", QtWidgets.QWidget], None]] = None,
         parent: Optional[QtCore.QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -60,9 +60,9 @@ class AppController(QtCore.QObject):
         self.layouts = LayoutStore()
         self.commands = CommandRegistry()
         self._quitting = False
-        # File > Change Metadata... (app.main only): asks for the metadata and
-        # reloads the run; a controller without it has no such menu entry.
-        self._change_metadata = change_metadata
+        # File > Run List... (app.main only): closes the run's windows and shows
+        # the run list; a controller without it has no such menu entry.
+        self._open_run_list = open_run_list
         self._reloading = False
         quit_app = None
         if manage_quit:
@@ -283,20 +283,20 @@ class AppController(QtCore.QObject):
         finally:
             self._quitting = False
 
-    # ------------------------------------------------------------ metadata
+    # ------------------------------------------------------------ run list
 
-    def can_change_metadata(self) -> bool:
-        return self._change_metadata is not None
+    def can_open_run_list(self) -> bool:
+        return self._open_run_list is not None
 
-    def change_metadata(self, window: QtWidgets.QWidget) -> None:
-        """File > Change Metadata...: the run's metadata CSV or its own data,
-        then the run loads again with it."""
-        if self._change_metadata is not None:
-            self._change_metadata(self, window)
+    def open_run_list(self, window: QtWidgets.QWidget) -> None:
+        """File > Run List...: close this run's windows (like Quit, the session
+        is recorded) and choose a run again; everything about runs lives there."""
+        if self._open_run_list is not None:
+            self._open_run_list(self, window)
 
     def close_for_reload(self) -> bool:
         """Close every explore window like Quit (the session is recorded)
-        without quitting the app, so the run can load again. False when a
+        without quitting the app, so the run list can show. False when a
         window stayed open."""
         self._reloading = True
         try:

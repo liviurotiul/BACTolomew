@@ -1,0 +1,17 @@
+# mafft: solved from yamls/mafft.yaml by docker/update_locks.sh (docker/solve_locks.py)
+# platform: linux-aarch64
+@EXPLICIT
+https://conda.anaconda.org/conda-forge/linux-aarch64/libgomp-16.2.0-h8acb6b2_7.conda#259ded79ac497cfbcf5434540e8b81b6
+https://conda.anaconda.org/conda-forge/linux-aarch64/_openmp_mutex-4.5-20_gnu.conda#468fd3bb9e1f671d36c2cbc677e56f1d
+https://conda.anaconda.org/conda-forge/linux-aarch64/libgcc-16.2.0-h205dda4_7.conda#489d5c9dc62265b3f6a57f9a106f1caf
+https://conda.anaconda.org/conda-forge/linux-aarch64/libiconv-1.18-h1ea5142_3.conda#951b54a36388613a99820b33b997f690
+https://conda.anaconda.org/conda-forge/linux-aarch64/ncurses-6.6-h2b6f883_1.conda#c3b4349171ca987ff33a1de61f7b3f96
+https://conda.anaconda.org/conda-forge/linux-aarch64/libstdcxx-16.2.0-hef695bb_7.conda#6c823668e78160957d1b061ceec15c2c
+https://conda.anaconda.org/conda-forge/linux-aarch64/libgcc-ng-16.2.0-he9431aa_7.conda#2fb8fda15618277477f6dfd0e3c0d4a9
+https://conda.anaconda.org/conda-forge/linux-aarch64/libgettextpo-0.25.1-hfb3de9a_2.conda#87bb455f7a40d2a36ea562ea953a661f
+https://conda.anaconda.org/conda-forge/linux-aarch64/readline-8.3-ha7194a6_1.conda#5b399a7afa10098f2a6b02263181426e
+https://conda.anaconda.org/conda-forge/linux-aarch64/libasprintf-0.25.1-hfb3de9a_2.conda#90d1c2d12c98256535f2e785623b53b4
+https://conda.anaconda.org/conda-forge/linux-aarch64/gmp-6.3.0-h4d6b352_3.conda#ce2326e31df1913341036653e1c07baa
+https://conda.anaconda.org/conda-forge/linux-aarch64/mpfr-4.2.2-h4b21e80_1.conda#df5830aa74e0c5c354ca2f800796493b
+https://conda.anaconda.org/conda-forge/linux-aarch64/gawk-5.4.1-hf268411_0.conda#73b71ab37d74d921111ec1facc3455eb
+https://conda.anaconda.org/conda-forge/linux-aarch64/mafft-7.526-h68df207_0.conda#e14efc7424a6f8ddf22f1e468c8f2adc

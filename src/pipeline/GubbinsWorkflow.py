@@ -1,10 +1,11 @@
-"""Gubbins per fastGEAR lineage and the recombination-masked core alignment (step ``gubbins``).
+"""Gubbins per lineage and the recombination-masked core alignment (step ``gubbins``).
 
 Input: ``core_alignment/core_gene_alignment.ordered.aln`` (``pipeline.CoreAlignment``)
-and the fastGEAR lineages (``fastgear/sample_clades.tsv``). The same rule applies to
-every dataset (``phylo.gubbins_mode``):
+and the lineages of the population structure step (``fastgear/sample_clades.tsv`` from
+fastGEAR, or ``fastbaps/sample_clades.tsv`` from FastBAPS, ``pipeline.PopulationStructure``).
+The same rule applies to every dataset (``phylo.gubbins_mode``):
 
-- ``auto`` (default): one Gubbins run per lineage when fastGEAR found two or more,
+- ``auto`` (default): one Gubbins run per lineage when there are two or more,
   else one run on all genomes; ``single``: always one run; ``per_lineage``: per
   lineage, an error when the lineages are unavailable.
 - A lineage with fewer than ``phylo.gubbins_min_lineage_size`` genomes, or fewer than
@@ -58,6 +59,7 @@ from pipeline.CoreAlignment import (
     read_ordering_summary,
 )
 from pipeline.Newick import leaf_names, read_newick
+from pipeline.PopulationStructure import sample_clades_path
 from pipeline.ToolEnv import phylo_outgroup_names, tool_cmd
 
 ALGORITHM_VERSION = 3
@@ -124,7 +126,7 @@ class GubbinsResult:
 
 @dataclass
 class GubbinsGroup:
-    """One Gubbins run: a fastGEAR lineage, or ``all`` genomes in single mode."""
+    """One Gubbins run: a lineage (fastGEAR or FastBAPS), or ``all`` genomes in single mode."""
 
     id: str
     members: list[str]
@@ -144,6 +146,7 @@ class GroupPlan:
     unassigned: list[str] = field(default_factory=list)
     warnings: list[dict[str, str]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    source: str = "fastGEAR"  # the method that found the lineages (fastGEAR or FastBAPS)
 
     @property
     def single(self) -> bool:
@@ -164,8 +167,11 @@ def _lineage_sort_key(value: str) -> tuple[int, Any]:
 
 # ------------------------------------------------------------ mode and groups
 def read_fastgear_lineages(output_path: Path) -> dict[str, str]:
-    """Sample -> fastGEAR lineage from fastgear/sample_clades.tsv (raises when unreadable)."""
-    path = Path(output_path) / "fastgear" / "sample_clades.tsv"
+    """Sample -> lineage from the run's sample_clades.tsv (fastgear/ or fastbaps/, by the
+    run's population method; raises when unreadable or when the run has no method)."""
+    path = sample_clades_path(output_path)
+    if path is None:
+        raise RuntimeError("the run has no population structure method")
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
         if not reader.fieldnames or "Sample" not in reader.fieldnames or "FastGearLineage" not in reader.fieldnames:
@@ -182,12 +188,14 @@ def resolve_gubbins_groups(
     settings: Mapping[str, Any],
     lineages: Mapping[str, str] | None,
     lineage_error: str | None = None,
+    *,
+    lineage_source: str = "fastGEAR",
 ) -> GroupPlan:
     """The Gubbins groups of a cohort by phylo.gubbins_mode (see the module docstring).
 
-    lineages: sample -> fastGEAR lineage, or None when fastGEAR is unavailable or
-    failed (lineage_error says why). The variable-column rule is applied later, on
-    the staged alignments.
+    lineages: sample -> lineage, or None when the population structure method
+    (lineage_source: fastGEAR or FastBAPS) is unavailable or failed (lineage_error says
+    why). The variable-column rule is applied later, on the staged alignments.
     """
     samples = list(samples)
     requested = str(settings["gubbins_mode"])
@@ -198,7 +206,8 @@ def resolve_gubbins_groups(
 
     def single(reason: str) -> GroupPlan:
         skip = SKIP_FEW_GENOMES if len(samples) < min_genomes else None
-        return GroupPlan(requested, "single", reason, [GubbinsGroup(SINGLE_GROUP, samples, skip)], [], warnings, notes)
+        return GroupPlan(requested, "single", reason, [GubbinsGroup(SINGLE_GROUP, samples, skip)], [], warnings, notes,
+                         lineage_source)
 
     if requested == "single":
         return single("configured")
@@ -206,14 +215,14 @@ def resolve_gubbins_groups(
         detail = lineage_error or "fastgear/sample_clades.tsv is missing"
         if requested == "per_lineage":
             raise RuntimeError(
-                f"phylo.gubbins_mode is per_lineage, but the fastGEAR lineages are unavailable ({detail})."
+                f"phylo.gubbins_mode is per_lineage, but the {lineage_source} lineages are unavailable ({detail})."
             )
         warnings.append(
             _warning(
                 "gubbins_lineages_unavailable",
-                f"The fastGEAR lineages are unavailable ({detail}), so Gubbins runs once on all genomes. "
+                f"The {lineage_source} lineages are unavailable ({detail}), so Gubbins runs once on all genomes. "
                 "On a cohort of distinct lineages its recombination calls are less reliable; a resume "
-                "that completes fastGEAR reruns Gubbins per lineage.",
+                f"that completes {lineage_source} reruns Gubbins per lineage.",
             )
         )
         return single("fastgear_unavailable")
@@ -228,7 +237,7 @@ def resolve_gubbins_groups(
     if len(by_lineage) < 2:
         if requested == "per_lineage":
             notes.append(
-                "phylo.gubbins_mode is per_lineage, but fastGEAR found one lineage, so Gubbins ran once "
+                f"phylo.gubbins_mode is per_lineage, but {lineage_source} found one lineage, so Gubbins ran once "
                 "on all genomes."
             )
         return single("one_lineage")
@@ -237,7 +246,7 @@ def resolve_gubbins_groups(
         for lineage, members in sorted(by_lineage.items(), key=lambda item: _lineage_sort_key(item[0]))
     ]
     reason = "two_or_more_lineages" if requested == "auto" else "configured"
-    return GroupPlan(requested, "per_lineage", reason, groups, unassigned, warnings, notes)
+    return GroupPlan(requested, "per_lineage", reason, groups, unassigned, warnings, notes, lineage_source)
 
 
 def group_folder_rel(group_id: str, single: bool) -> Path:
@@ -1028,7 +1037,7 @@ def group_warnings(entry: Mapping[str, Any], settings: Mapping[str, Any]) -> lis
             text = (
                 "the cohort holds distinct lineages. Gubbins is designed for closely related isolates; its "
                 "recombination calls are most reliable within one lineage (phylo.gubbins_mode per_lineage, "
-                "which needs fastGEAR lineages)."
+                "which needs fastGEAR or FastBAPS lineages)."
             )
         else:
             text = (
@@ -1221,6 +1230,7 @@ def run_gubbins(
     threads: int,
     lineages: Mapping[str, str] | None,
     lineage_error: str | None = None,
+    lineage_source: str = "fastGEAR",
 ) -> GubbinsResult:
     """The gubbins step: groups by phylo.gubbins_mode, Gubbins per group (reusing the
     unchanged ones), Gubbins' masking per group merged into the masked core alignment,
@@ -1233,7 +1243,7 @@ def run_gubbins(
         raise RuntimeError("The ordered core alignment (step core_alignment) is required before Gubbins.")
     ordered_sha = str((ordering.get("output") or {}).get("sha256") or "") or file_sha256(alignment)
     taxa = [name for name, _seq in iter_fasta_records(alignment)]
-    plan = resolve_gubbins_groups(taxa, settings, lineages, lineage_error)
+    plan = resolve_gubbins_groups(taxa, settings, lineages, lineage_error, lineage_source=lineage_source)
     single = plan.single
     gubbins_dir.mkdir(parents=True, exist_ok=True)
     previous = _previous_group_stamps(gubbins_dir)
@@ -1286,7 +1296,7 @@ def run_gubbins(
         if plan.unassigned:
             item = _warning(
                 "gubbins_lineage_skipped",
-                f"{len(plan.unassigned)} genome(s) have no fastGEAR lineage and stay in the core tree without "
+                f"{len(plan.unassigned)} genome(s) have no {plan.source} lineage and stay in the core tree without "
                 f"recombination masking: {', '.join(plan.unassigned)}.",
             )
             warnings.append(item)
@@ -1475,6 +1485,7 @@ def run_gubbins(
         "mode": plan.requested_mode,
         "resolved_mode": plan.resolved_mode,
         "mode_reason": plan.mode_reason,
+        "lineage_source": plan.source,
         "ran": bool(ran),
         "skip_reason": None if ran else "no group ran (" + ", ".join(
             f"{_group_label(e['id'])}: {e['skip_reason']}" for e in ordered_entries
@@ -1594,6 +1605,7 @@ def gubbins_reuse_issue(
     threads: int,
     lineages: Mapping[str, str] | None,
     lineage_error: str | None = None,
+    lineage_source: str = "fastGEAR",
 ) -> str | None:
     """Why the existing Gubbins output cannot be reused as a whole (None when it can).
     When it cannot, run_gubbins still reuses every group whose genomes, input and
@@ -1613,7 +1625,7 @@ def gubbins_reuse_issue(
     alignment = output_path / ORDERED_ALIGNMENT_REL
     taxa = [name for name, _seq in iter_fasta_records(alignment)] if alignment.is_file() else []
     try:
-        plan = resolve_gubbins_groups(taxa, settings, lineages, lineage_error)
+        plan = resolve_gubbins_groups(taxa, settings, lineages, lineage_error, lineage_source=lineage_source)
     except RuntimeError as exc:
         return str(exc)
     if summary.get("resolved_mode") != plan.resolved_mode:
