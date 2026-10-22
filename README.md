@@ -270,37 +270,17 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=src .venv/bin/python -m unittest discover -
 The tools image is built with `bash docker/build.sh [version]`; publishing it is described in
 [`docker/PUBLISHING.md`](docker/PUBLISHING.md).
 
-## Repository layout
-
-```
-src/
-  bactolomew_main.py             # entry point: gui (default), setup, run, check, db, --version
-  main.py                        # older pipeline entry point (same options as `run`)
-  annotation_explorer_qt.py      # launches the desktop app directly (as `gui`)
-  pipeline/                      # workflow orchestration, containerized tool dispatch (ToolEnv)
-  annotation_explorer_polars/    # PyQt6 GUI: windows, panels, docking, tables, trees, maps
-  scripts/                       # standalone analysis / plotting utilities
-tests/                           # unittest suite (offscreen Qt)
-yamls/                           # conda environment definitions (one per tool group)
-docker/                          # Dockerfile, version locks and build scripts for the tools image
-docs/                            # change logs (pipeline fixes, phylogeny rework) and the validation plan
-tools/                           # maintenance utilities (dependency locks and checks)
-misc/                            # older experiments and unused code kept for reference
-install.sh                       # host installer
-requirements*.txt                # host Python dependencies (ranges); requirements*.lock: tested pins
-```
-
 ## Configuration
 
-`bactolomew_config.json` is **generated per machine** by first-time setup (absolute paths to the
-databases, the container runtime and image, resource limits) and is intentionally not tracked in
-git. Large inputs, databases and results (`DB/`, `bakta_db/`, `checkm2_db/`, `runs/`, `cache/`,
-`*.sif`) are git-ignored too.
+First-time setup writes `bactolomew_config.json` with the paths to the databases, the
+container runtime and image, and resource limits. Most of it can be changed later in
+**Settings**.
 
 ## Citation
 
-A Zenodo DOI for the code will be added here after the first release. Until then, cite the
-repository (https://github.com/liviurotiul/BACTolomew) and the tools listed above.
+If you use BACTolomew, please cite the release you used, e.g.
+"BACTolomew v0.2.0, https://github.com/liviurotiul/BACTolomew/releases/tag/v0.2.0",
+together with the tools listed above.
 
 ## License
 
