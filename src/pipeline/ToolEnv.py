@@ -250,7 +250,7 @@ def get_tool_env_prefix(tool_name: str) -> Optional[str]:
 # absolute-path command args resolve unchanged inside the container.
 # ---------------------------------------------------------------------------
 
-TOOLS_IMAGE = "liviurotiul/bactolomew:0.3.0"
+TOOLS_IMAGE = "liviurotiul/bactolomew:0.3.0@sha256:7ed7408c88aac76f6c00b2417862e24f1dd3d91fe9ea89c5d62d57df7770ffde"
 DEFAULT_RUNTIME = "native"  # backward-compatible default when config has no `runtime`
 CONTAINER_RUNTIMES = ("docker", "podman", "singularity")  # config `runtime` values besides native
 OCI_RUNTIMES = ("docker", "podman")  # engines that run `<exe> run ... <image> <argv>`

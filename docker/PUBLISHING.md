@@ -168,8 +168,16 @@ Deferred on purpose, each needs a smoke test or a behavior decision first:
 
 Docker Hub, repository `liviurotiul/bactolomew` (public; anonymous pulls are rate limited,
 about 100 per 6 hours per IP, which is plenty for installs). The fastGEAR base image is
-mirrored as `liviurotiul/fastgear:2022-12-01`. Published so far: `0.2.0` (release v0.2.0,
-commit 8142861) and `0.3.0`.
+mirrored as `liviurotiul/fastgear:2022-12-01`. Published so far (2026-10-22):
+
+| Tag | Release | Digest |
+|---|---|---|
+| `liviurotiul/bactolomew:0.2.0` | v0.2.0, commit 8142861 | `sha256:ce2253b99507151b877c84affbb2f3fe9f75acaad65be1077bbd53e02f27f3b8` |
+| `liviurotiul/bactolomew:0.3.0` | v0.3.0, built from commit cfd9a08 | `sha256:7ed7408c88aac76f6c00b2417862e24f1dd3d91fe9ea89c5d62d57df7770ffde` |
+| `liviurotiul/fastgear:2022-12-01` | mirror of `pgcbioinfo/fastgear:latest` | `sha256:afb299e7fb327129ebf2acc1bcae00e0a54cd6fbe71d114d0a9f1642a2216b79` (same digest) |
+
+Both tools images are linux/amd64; an arm64 image is not published yet (built on a Mac, see
+"Building on Apple Silicon").
 
 The steps below use `IMAGE=liviurotiul/bactolomew`.
 
