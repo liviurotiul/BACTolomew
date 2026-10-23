@@ -30,6 +30,7 @@ the geographic map and the *bla*<sub>OXA-23</sub> gene neighborhoods.
   - [HPC and servers](#hpc-and-servers)
   - [After installing](#after-installing)
 - [Getting started](#getting-started)
+  - [Tutorial with an example dataset](docs/TUTORIAL.md)
   - [Set up the full pipeline](#set-up-the-full-pipeline)
   - [Set up a viewer](#set-up-a-viewer)
   - [Share a run](#share-a-run)
@@ -205,6 +206,9 @@ yet. Minimal systems may need extra packages (the installer names them).
 [docs/INSTALL.md](docs/INSTALL.md) has the full guide, common problems and how to uninstall.
 
 ## Getting started
+
+New here? Try the [tutorial with an example dataset](docs/TUTORIAL.md): download a finished
+run, import it and explore it, in about 15 minutes.
 
 ### Set up the full pipeline
 
