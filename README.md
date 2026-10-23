@@ -178,41 +178,75 @@ bash install.sh --headless
 ### After installing
 
 Start BACTolomew with `./bactolomew` in its folder (on Windows, from the Start Menu). The first
-start downloads the tools image and the databases.
+start asks whether to set up the full pipeline or a viewer: see
+[Full pipeline or viewer only](#full-pipeline-or-viewer-only).
 
 The Linux installs above are tested; macOS and Windows are not yet tested on a real machine.
 Minimal systems may need more packages (the installer names them), and the full guide with
 common problems and how to uninstall is in [docs/INSTALL.md](docs/INSTALL.md).
 
-## First launch and setup
+## Full pipeline or viewer only
 
-```bash
-./bactolomew
-```
+BACTolomew can be set up in two ways. You choose at the first start, and you can turn a viewer
+into a full install at any time.
 
-On first launch BACTolomew asks what the install is for: **Full (run analyses)** or **Viewer
-only (open results from others)**. A viewer downloads nothing: open runs shared with you through
-Import Run... in the run list; features that need the tools (such as aligning sequences from a
-gene card, adding cgMLST schemas or databases, starting or resuming a run) are greyed out with
-the reason. Settings > "Set Up Pipeline…" (or `./bactolomew setup`) makes it a full install
-later; `./bactolomew setup --viewer` sets up a viewer without a window, and `./bactolomew check`
-shows the mode.
+| | Full pipeline | Viewer only |
+|---|---|---|
+| What it is for | running analyses on your own assemblies, and viewing them | looking at runs someone shared with you |
+| Needs | Docker, Podman or Apptainer; about 150 GB free; 32 GB RAM recommended | nothing extra; about 1 GB |
+| Downloads at setup | the tools image (about 10 GB) and the Bakta and CheckM2 databases (about 45 GB) | nothing |
 
-For a full install, a **first-time setup** window gets everything ready by itself: the tools image,
-the full Bakta database (with its AMRFinderPlus database, which the AMRFinderPlus step uses) and
-the CheckM2 database, then a quick check that makes the `DB/` folder; parts already installed are
-kept. The full Bakta database is a 39.4 GB download that unpacks to 76 GB and takes about 1 to 2
-hours; before it starts anything, setup checks for about 125 GB free (download and unpacked
-database side by side, 115.7 GB, plus CheckM2 4.8 GB and a 5 GB margin; about 15 GB more for a
-Singularity `.sif` on the same disk). The tools image is pulled when `container.image` names a
-registry; until a published image is configured it is built locally from `docker/Dockerfile`
-(about an hour, needs network access to conda-forge, bioconda and Docker Hub). Setup writes a
-machine-local `bactolomew_config.json` (git-ignored).
+### Set up the full pipeline
 
-Then the runs window lists your runs (View, Monitor, Resume, Stop) and starts a new one from a
-folder of assembled genomes ("Add Assemblies…", "Start New Run"). Its gear button opens
-Settings: compute limits, cgMLST schemes and databases. Opening a run asks for its metadata
-(a CSV with a `Sample` column, or "Use run data only").
+1. Install as shown above (`bash install.sh`).
+2. Start BACTolomew with `./bactolomew` and choose **Full (run analyses)**. On a server without
+   a screen, run `./bactolomew setup --yes` instead.
+3. The setup window downloads and installs everything by itself, with progress for each step:
+   - the tools image, `liviurotiul/bactolomew` from Docker Hub (on Apple Silicon it is built on
+     your Mac instead, about an hour);
+   - the full Bakta database (39.4 GB download, 76 GB unpacked, about 1 to 2 hours), which also
+     brings the AMRFinderPlus database;
+   - the CheckM2 database (1.7 GB);
+   - a quick check.
+
+   Setup first checks that about 125 GB are free. If a step fails, Retry continues from there.
+4. When it is done, `./bactolomew check` says "Ready to run". In the run list, click
+   **Start New Run**, add your assemblies with **Add Assemblies…** and start. The cgMLST scheme
+   for your species downloads during the run (you accept the cgMLST.org terms once).
+
+### Set up a viewer
+
+1. Install with `bash install.sh --viewer` (on Windows: `install_windows.ps1 -Viewer`).
+2. Start BACTolomew with `./bactolomew`. A viewer install opens straight to the run list;
+   after a plain install, choose **Viewer only (open results from others)** at the first start.
+   Without a screen: `./bactolomew setup --viewer`.
+3. Click **Import Run…** in the run list and pick the `.zip` someone shared with you (or a run
+   folder). If it was made with a different version, you see a warning and can still open it.
+4. Click **View** to explore it.
+
+In a viewer, the few features that need the tools (aligning sequences from a gene card, adding
+cgMLST schemes or databases, starting or resuming runs) are greyed out with the reason.
+
+### Share a run
+
+On the machine that made it: in the run list, open the run's **More** menu and choose
+**Export for Sharing…**. This makes one `.zip` with what the viewer needs (about 0.5 GB for 150
+genomes, more with the assemblies included) and without any paths from your computer. Send it,
+and the other person imports it as above.
+
+### Turn a viewer into a full install
+
+In Settings (the gear button in the run list) click **Set Up Pipeline…**, or run
+`./bactolomew setup`. It then installs everything as described for the full pipeline.
+`./bactolomew check` always shows which mode you are in.
+
+## Using the run list
+
+The run list is the first window: it lists your runs (View, Monitor, Resume, Stop), starts new
+ones and imports shared ones. A run's **More** menu has Run Details, Change Metadata, Export for
+Sharing and Show in Folder. The gear button opens Settings: compute limits, cgMLST schemes and
+your own databases. Opening a run asks for its metadata (a CSV with a `Sample` column, or "Use
+run data only"). Setup writes a machine-local `bactolomew_config.json`.
 
 ## Running
 
