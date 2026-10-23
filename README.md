@@ -15,6 +15,36 @@ A run of 153 *Acinetobacter baumannii* genomes: the explore window (phylogeny, g
 presence/absence, map, plasmidome), the cgMLST minimum spanning tree, pangenome clustering,
 the geographic map and the *bla*<sub>OXA-23</sub> gene neighborhoods.
 
+## Contents
+
+- [What it does](#what-it-does)
+- [Installation](#installation)
+  - [Ubuntu and Debian](#ubuntu-and-debian)
+  - [Fedora](#fedora)
+  - [Rocky, Alma and RHEL (8 and 9)](#rocky-alma-and-rhel-8-and-9)
+  - [openSUSE Leap and Tumbleweed](#opensuse-leap-and-tumbleweed)
+  - [Arch](#arch)
+  - [Then, on any Linux](#then-on-any-linux)
+  - [macOS](#macos)
+  - [Windows 10 and 11](#windows-10-and-11)
+  - [HPC and servers](#hpc-and-servers)
+  - [After installing](#after-installing)
+- [Getting started](#getting-started)
+  - [Set up the full pipeline](#set-up-the-full-pipeline)
+  - [Set up a viewer](#set-up-a-viewer)
+  - [Share a run](#share-a-run)
+  - [Turn a viewer into a full install](#turn-a-viewer-into-a-full-install)
+- [The run list](#the-run-list)
+- [Command line and HPC](#command-line-and-hpc)
+- [Gene categories](#gene-categories)
+- [Your own databases](#your-own-databases)
+- [cgMLST schemes](#cgmlst-schemes)
+- [Outputs](#outputs)
+- [Tools and versions](#tools-and-versions)
+- [Development](#development)
+- [Citation](#citation)
+- [License](#license)
+
 ## What it does
 
 The pipeline runs assembly QC, Bakta annotation, MLST, AMRFinderPlus (acquired genes and point
