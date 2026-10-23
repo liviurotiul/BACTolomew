@@ -36,7 +36,7 @@ A viewer install can become a full one later with `./bactolomew setup`.
 | System | Linux x86_64 (glibc 2.34 or newer for the window, 2.28 for headless); macOS 13 or newer; Windows 10 (2004) or 11 through WSL2 | the same |
 | Python | 3.10 to 3.14 (the installer says how to get one) | the same |
 | Container runtime | Docker (tested), Podman or Apptainer/Singularity | none |
-| Disk | about 150 GB free for the first setup (databases about 125 GB while unpacking, the tools image about 22 GB); about 100 GB stay afterwards, plus your runs | about 1 GB, plus about 0.5 GB per shared run of 150 genomes |
+| Disk | about 150 GB free for the first setup (databases about 125 GB while unpacking, the tools image about 20 GB); about 100 GB stay afterwards, plus your runs | about 1 GB, plus about 0.5 GB per shared run of 150 genomes |
 | Memory | 32 GB recommended; 16 GB works, more slowly | 8 GB is enough |
 | CPU | x86_64 with AVX2 (Intel Haswell, AMD Zen or newer), or Apple Silicon | the same |
 
@@ -386,7 +386,7 @@ changes nothing outside the install folder. It is safe to run again, for example
 ```
 
 The first start asks what the install is for: **Full (run analyses)** or **Viewer only (open
-results from others)**. A full install then runs first-time setup: the tools image (about 22 GB,
+results from others)**. A full install then runs first-time setup: the tools image (about 20 GB,
 pulled from Docker Hub), the Bakta database (a 39 GB download that unpacks to 76 GB, 1 to 2
 hours) and the CheckM2 database. Parts already installed are kept, so an interrupted setup can
 simply be started again.
@@ -428,7 +428,7 @@ Resources, memory 16 GB or more and the disk limit 150 GB or more. Windows: see
 `wsl --update`, then `wsl --shutdown`, and start BACTolomew again. Windows 10 needs 21H2 or
 newer for WSLg.
 
-**Setup is slow on the tools image.** The image is about 22 GB. If the download fails, setup
+**Setup is slow on the tools image.** The image is about 20 GB (about 7 GB to download). If the download fails, setup
 builds the image locally instead, which takes about an hour; check the network and run setup
 again to download it.
 
