@@ -146,6 +146,33 @@ class SetupPlanTest(unittest.TestCase):
         self.assertRegex(text, r"Bakta database\s+info\s+not needed \(viewer\)")
         self.assertNotIn("MISSING", text)
 
+    def test_invalid_config_is_reported_never_replaced_by_defaults(self):
+        import contextlib
+        import io
+        from unittest import mock
+
+        import bactolomew_main as M
+        from pipeline import ToolEnv
+
+        root = Path(tempfile.mkdtemp(prefix="badcfg-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        path = root / "bactolomew_config.json"
+        text = '{\n  # use podman\n  "runtime": "podman"\n}\n'
+        path.write_text(text)
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(ToolEnv, "project_root", return_value=root), \
+                mock.patch.object(M, "_qt_report", return_value=(True, "Qt")), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            with self.assertRaisesRegex(ToolEnv.ConfigError, r"line 2, column 3.*does not allow comments"):
+                ToolEnv._load_app_config()
+            with self.assertRaises(ToolEnv.ConfigError):
+                ToolEnv.save_app_config({"mode": "viewer"})
+            self.assertEqual(M.main(["setup", "--dry-run"]), 1)
+            self.assertEqual(M.main(["check"]), 1)
+        self.assertEqual(path.read_text(), text)  # never overwritten
+        self.assertIn(f"Error: {path} is not valid JSON", err.getvalue())
+        self.assertRegex(out.getvalue(), r"Config\s+MISSING\s+.*not valid JSON")
+
 
 if __name__ == "__main__":
     unittest.main()

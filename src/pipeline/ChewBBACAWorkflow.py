@@ -39,6 +39,10 @@ CHEWBBACA_SCHEMA_CONFIG = ".schema_config"
 CHEWBBACA_GENE_LIST = ".genes_list"
 CHEWBBACA_SHORT_DIR = "short"
 CHEWBBACA_SCHEME_CATALOG = "scheme_species_catalog.json"
+# Our species catalog of the cgMLST schemes; setup copies it into DB/cgmlst.
+SHIPPED_SCHEME_CATALOG = Path(__file__).resolve().parent / "data" / CHEWBBACA_SCHEME_CATALOG
+# Files a file manager leaves in a folder (an otherwise empty schema folder is not installed).
+_JUNK_FILES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 CHEWBBACA_SELF_SCORES = "self_scores"
 MLST_RESULTS_JSON = "results.json"
 # chewBBACA prints this for every BLAST match whose representative has no self-score;
@@ -158,6 +162,10 @@ def resolve_chewbbaca_settings(raw_config: Mapping[str, Any] | None = None) -> d
     extra_args = settings.get("extra_args")
     if not isinstance(extra_args, list):
         settings["extra_args"] = []
+    # Without a configured schema the run's species decides it (and the step installs it):
+    # a config that turned auto-selection off but names no schema could never run.
+    if not settings["schema_dir"]:
+        settings["auto_select_from_mlst"] = True
     return settings
 
 
@@ -287,6 +295,38 @@ def _default_catalog_path(settings: Mapping[str, Any]) -> Path:
     return (project_root() / "DB" / "cgmlst" / CHEWBBACA_SCHEME_CATALOG).resolve()
 
 
+def _restore_shipped_catalog(catalog_path: Path, logger: logging.Logger) -> bool:
+    """Copy our species catalog to ``catalog_path`` (setup puts it in DB/cgmlst) when it is
+    missing there; True when the catalog is there now."""
+    if not SHIPPED_SCHEME_CATALOG.is_file():
+        return False
+    try:
+        catalog_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(SHIPPED_SCHEME_CATALOG, catalog_path)
+    except OSError as exc:
+        logger.warning("Could not copy the cgMLST scheme catalog to %s: %s", catalog_path, exc)
+        return False
+    logger.info("Copied the cgMLST scheme catalog to %s.", catalog_path)
+    return True
+
+
+def _is_empty_schema_dir(path: Path) -> bool:
+    """A schema folder holding nothing (or only Finder's .DS_Store): a schema that was never
+    installed, which the chewBBACA step installs over."""
+    try:
+        return path.is_dir() and all(child.name in _JUNK_FILES for child in path.iterdir())
+    except OSError:
+        return False
+
+
+def _remove_empty_schema_dir(path: Path) -> None:
+    if not _is_empty_schema_dir(path):
+        return
+    for child in path.iterdir():
+        child.unlink()
+    path.rmdir()
+
+
 def _load_mlst_rows(output_path: Path) -> list[dict[str, Any]]:
     path = output_path / "mlst" / MLST_RESULTS_JSON
     if not path.is_file():
@@ -389,7 +429,7 @@ def _select_runtime_schema(
         return resolved
 
     catalog_path = _default_catalog_path(resolved)
-    if not catalog_path.is_file():
+    if not catalog_path.is_file() and not _restore_shipped_catalog(catalog_path, logger):
         logger.info("chewBBACA schema auto-selection skipped: cgMLST catalog not found at %s.", catalog_path)
         return resolved
 
@@ -449,7 +489,7 @@ def _select_runtime_schema(
         )
 
     schema_path = _resolve_catalog_schema_path(selected_entry, catalog_path, resolved)
-    if not schema_path.exists():
+    if not schema_path.exists() or _is_empty_schema_dir(schema_path):
         species = selected_entry.get("species") or [selected_entry["schema_id"]]
         raise CgmlstSchemaMissing(
             f"The cgMLST schema for {species[0]} ('{selected_entry['schema_id']}') is not installed "
@@ -558,6 +598,22 @@ def schema_orientation_issue(schema_path: Path) -> str:
     )
 
 
+def check_chewbbaca_settings_before_run(raw_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The chewBBACA settings a run may start with. With auto-selection from MLST no schema
+    has to be installed yet: the chewBBACA step picks the species' schema and installs it
+    (prepare_chewbbaca_schema), so only the optional files and a readable catalog are
+    checked; without it the configured schema must be usable (validate_chewbbaca_settings)."""
+    settings = resolve_chewbbaca_settings(raw_config)
+    if not settings.get("auto_select_from_mlst"):
+        return validate_chewbbaca_settings(settings)
+    catalog_path = _default_catalog_path(settings)
+    if catalog_path.is_file():
+        _load_scheme_catalog(catalog_path)
+    # The genes list belongs to the schema the step selects.
+    _validate_optional_files({**settings, "genes_list": ""})
+    return settings
+
+
 def validate_chewbbaca_settings(raw_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     settings = resolve_chewbbaca_settings(raw_config)
     schema_dir = str(settings.get("schema_dir") or "").strip()
@@ -576,7 +632,11 @@ def validate_chewbbaca_settings(raw_config: Mapping[str, Any] | None = None) -> 
     if schema_issues:
         details = "\n".join(f"- {issue}" for issue in schema_issues)
         raise ValueError(f"Invalid chewBBACA schema directory: {schema_path}\n{details}")
+    _validate_optional_files(settings)
+    return settings
 
+
+def _validate_optional_files(settings: Mapping[str, Any]) -> None:
     training_file = str(settings.get("training_file") or "").strip()
     if training_file:
         training_path = Path(training_file)
@@ -599,8 +659,6 @@ def validate_chewbbaca_settings(raw_config: Mapping[str, Any] | None = None) -> 
         loci_path = Path(loci_list)
         if not loci_path.exists() or not loci_path.is_file():
             raise ValueError(f"chewBBACA loci list not found: {loci_path}")
-
-    return settings
 
 
 def _candidate_cmds(*args: str) -> list[list[str]]:
@@ -701,6 +759,7 @@ def _install_missing_schema(
     logger: logging.Logger,
     *,
     threads: int,
+    output_path: Path | None = None,
     status: StatusCallback = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> Path:
@@ -710,8 +769,8 @@ def _install_missing_schema(
     ``status`` follows the install ("Installing cgMLST scheme · A. baumannii", share);
     ``should_cancel`` (the run's Stop) ends it with CgmlstInstall.Cancelled.
     The cgMLST.org terms count as accepted when they were accepted for that folder or for
-    the configured cgMLST folder (the GUI asks for them before such a run starts; the
-    command line records them with --accept-terms). Raises CgmlstSchemaMissing, with what
+    the configured cgMLST folder (the GUI asks for them before such a run starts; bactolomew
+    run records them with --accept-cgmlst-terms). Raises CgmlstSchemaMissing, with what
     to do before Resume, when they were not, when cgMLST.org has no scheme for the
     species, or when the install fails.
     """
@@ -729,10 +788,11 @@ def _install_missing_schema(
     dest = Path(missing.catalog_path).parent if missing.catalog_path else default_dest()
     # The terms first: nothing is fetched from cgMLST.org before they are accepted.
     if not cgmlst_terms_accepted(missing.catalog_path or default_dest() / CHEWBBACA_SCHEME_CATALOG):
+        out = str(output_path) if output_path else "<run folder>"
         raise CgmlstSchemaMissing(
             f"The cgMLST scheme for {species} is not installed, and downloading it from cgMLST.org "
-            "needs their terms of use accepted once: run python -m pipeline.CgmlstInstall --accept-terms "
-            "(or accept them in Settings > Download from cgMLST.org), then Resume the run.",
+            "needs their terms of use accepted once. In the app, click Resume and accept them; on the "
+            f"command line, resume with: bactolomew run --out {out} --resume --accept-cgmlst-terms",
             code=CGMLST_TERMS_NOT_ACCEPTED, **fail,
         )
     try:
@@ -751,6 +811,8 @@ def _install_missing_schema(
     logger.info("Installing the missing cgMLST schema '%s' from cgMLST.org into %s.", missing.schema_id, dest)
     report_status(status, text, 0.0)
     try:
+        # An empty folder left where the schema goes is not an installed schema.
+        _remove_empty_schema_dir(dest / missing.schema_id)
         results = install([scheme.slug], dest=dest, cpu=max(1, int(threads)), accept=True, index=index,
                           progress=logger.info, should_cancel=should_cancel,
                           on_fraction=lambda _sid, share: report_status(status, text, share))
@@ -815,8 +877,8 @@ def prepare_chewbbaca_schema(
     except CgmlstSchemaMissing as missing:
         if missing.code != CGMLST_SCHEMA_NOT_INSTALLED:
             raise
-        installed_path = _install_missing_schema(missing, logger, threads=threads, status=status,
-                                                 should_cancel=should_cancel)
+        installed_path = _install_missing_schema(missing, logger, threads=threads, output_path=output_path,
+                                                 status=status, should_cancel=should_cancel)
         settings = resolve_chewbbaca_settings(config)
         # The installed folder wins over a stale available_schemas path of the run's settings.
         settings["available_schemas"] = {**settings["available_schemas"],
@@ -953,6 +1015,7 @@ __all__ = [
     "check_self_scores_before_call",
     "chewbbaca_schema_issues",
     "chewbbaca_schema_stamp_issue",
+    "check_chewbbaca_settings_before_run",
     "cgmlst_terms_accepted",
     "load_self_scores",
     "prepare_chewbbaca_schema",

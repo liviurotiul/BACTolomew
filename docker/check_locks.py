@@ -30,6 +30,14 @@ PLATFORM_ONLY: dict[str, str] = {
     "perl-extutils-pl2bat": "linux-64",
 }
 
+# Packages whose version may differ between the platforms, per env (a platform runtime
+# piece, not a tool or a library a tool's results depend on).
+VERSION_MAY_DIFFER: dict[str, set[str]] = {
+    # The build tools of vcflib (docker/vcflib/locks, never shipped): the glibc 2.17 sysroot
+    # pairs with the Linux 3.10 headers on x86_64 and 4.18 on aarch64.
+    "vcflib_build": {"kernel-headers_linux-<platform>"},
+}
+
 
 def normalize(name: str) -> str:
     return re.sub(r"_linux-(64|aarch64)$", "_linux-<platform>", name)
@@ -57,7 +65,7 @@ def main() -> int:
         x86, arm = (load_env(locks, plat, env) for plat in PLATFORMS)
         for name in sorted(set(x86) | set(arm)):
             if name in x86 and name in arm:
-                if x86[name] != arm[name]:
+                if x86[name] != arm[name] and name not in VERSION_MAY_DIFFER.get(env, set()):
                     problems.append(f"{env}: {name} {x86[name]} (linux-64) != {arm[name]} (linux-aarch64)")
                 continue
             plat = "linux-64" if name in x86 else "linux-aarch64"

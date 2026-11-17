@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
-import os
-import socket
+import logging
 from pathlib import Path
 from typing import Optional, Sequence
 
+from pipeline.RunLock import stale_reason
 from pipeline.RunShare import RUN_FILES, is_shared_run, rebase_recorded_path, recorded_root
 from pipeline.RunValidation import skippable_steps
 
 from .constants import RUN_LOCK_FILENAME, RUN_REPORT_FILENAME, RUN_STATE_FILENAME
+
+_LOG = logging.getLogger(__name__)
 
 _FASTGEAR_EXPECTED_RELATIVE = (
     Path("fastgear") / "fastgear_res.mat",
@@ -118,33 +120,27 @@ def _load_json_dict(path: Path) -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
-def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
-
-
 def run_is_active(output_dir: Path) -> bool:
+    """Whether a run.lock.json says the run is going. A stale lock (its process gone on
+    this host, or its pid now another program's) is removed, with a log line, so the run
+    shows as interrupted and can be resumed."""
     lock_path = Path(output_dir) / RUN_LOCK_FILENAME
     if not lock_path.exists():
         return False
     data = _load_json_dict(lock_path)
     if data is None:
         return True
-    host = str(data.get("host") or "").strip()
-    pid = int(data.get("pid") or 0)
-    if host and host != socket.gethostname():
-        return True
-    if _pid_alive(pid):
+    reason = stale_reason(data)
+    if reason is None:
         return True
     try:
         lock_path.unlink()
-    except Exception:
+    except FileNotFoundError:
         pass
+    except Exception:
+        _LOG.warning("Stale run lock %s (%s) could not be removed", lock_path, reason, exc_info=True)
+        return False
+    _LOG.warning("Removed stale run lock %s: %s", lock_path, reason)
     return False
 
 

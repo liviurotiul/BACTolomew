@@ -594,6 +594,8 @@ qt_lib_package() {  # qt_lib_package <soname>
     libfontconfig.so.*) a="libfontconfig1"; d="fontconfig"; z="libfontconfig1"; p="fontconfig" ;;
     libfreetype.so.*) a="libfreetype6"; d="freetype"; z="libfreetype6"; p="freetype2" ;;
     libexpat.so.*) a="libexpat1"; d="expat"; z="libexpat1"; p="expat" ;;
+    libbrotlidec.so.*|libbrotlicommon.so.*) a="libbrotli1"; d="libbrotli"; p="brotli"
+      case "$so" in libbrotlicommon*) z="libbrotlicommon1";; *) z="libbrotlidec1";; esac ;;
     libGL.so.*|libGLX.so.*) a="libgl1"; d="mesa-libGL"; z="libglvnd"; p="libglvnd" ;;
     libEGL.so.*) a="libegl1"; d="mesa-libEGL"; z="libglvnd"; p="libglvnd" ;;
     libOpenGL.so.*) a="libopengl0"; d="libglvnd-opengl"; z="libglvnd"; p="libglvnd" ;;

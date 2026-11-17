@@ -10,3 +10,8 @@
 !docker/install_optional_envs.sh
 !docker/verify_image.sh
 !docker/make_tool_versions.py
+!docker/vcflib/build_vcflib.sh
+!docker/vcflib/set_rpath.cmake
+!docker/vcflib/patches/*.patch
+!docker/vcflib/locks/linux-64/vcflib_build.lock
+!docker/vcflib/locks/linux-aarch64/vcflib_build.lock

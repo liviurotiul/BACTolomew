@@ -9,7 +9,9 @@ Usage:
         (docker/verify_image.sh, inside the image) only the envs installed in
         /opt/conda/envs, from `conda list --json` (PyPI wheels show as channel pypi), the
         R packages built from source (<env>.r_source.tsv, installed and version-checked by
-        install_envs.sh) and fastGEAR only when its files are in the image.
+        install_envs.sh), the packages rebuilt from source over their conda files
+        (/opt/bactolomew/source_builds/<env>.json) and fastGEAR only when its files are
+        in the image.
 
 The hand-written "notes" of an env and the "fastgear" section are kept from the existing
 locks summary. Every run records the image's "envs" tools as provenance
@@ -55,6 +57,14 @@ def r_sources(path: Path) -> list[dict]:
                 out.append({"name": parts[0], "version": parts[1], "build": f"source sha256:{parts[2]}",
                             "channel": parts[3]})
     return out
+
+
+def source_builds(path: Path) -> dict[str, dict]:
+    """Packages whose files the image rebuilt from source over the conda package's
+    (/opt/bactolomew/source_builds/<env>.json, e.g. vcflib, docker/vcflib/build_vcflib.sh)."""
+    if not path.is_file():
+        return {}
+    return {name: {"name": name, **rec} for name, rec in json.loads(path.read_text()).items()}
 
 
 def tools_of(env: str, records: dict[str, dict]) -> dict[str, dict]:
@@ -119,6 +129,7 @@ def from_image(summary: dict) -> dict:
         recs = {p["name"]: {"name": p["name"], "version": p["version"], "build": p.get("build_string", ""),
                             "channel": p.get("channel", "")} for p in json.loads(res.stdout)}
         recs.update({r["name"]: r for r in r_sources(Path("/opt/bactolomew/locks") / f"{env}.r_source.tsv")})
+        recs.update(source_builds(Path("/opt/bactolomew/source_builds") / f"{env}.json"))
         tools = {n: {k: r[k] for k in ("version", "build", "channel")} for n, r in tools_of(env, recs).items()}
         entry = {"lock": f"{env}.lock" if env != "base" else None, "packages_total": len(recs), "tools": tools}
         notes = (sum_envs.get(env) or {}).get("notes")

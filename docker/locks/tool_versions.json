@@ -622,6 +622,9 @@
             "linux-aarch64": "h94ad73b_2_cpython"
           }
         }
+      },
+      "notes": {
+        "vcflib": "From 0.3.1 the image rebuilds vcflib 1.0.9 from its release source for the architecture's baseline CPU (docker/vcflib/build_vcflib.sh) over the bioconda package's files: the bioconda linux-64 build's programs use AVX-512, AVX2 and BMI2 without a CPU check and die with Illegal instruction on CPUs without AVX-512. The lock and conda-meta keep the bioconda record; the image's own tool_versions.json names the source build."
       }
     },
     "quast": {

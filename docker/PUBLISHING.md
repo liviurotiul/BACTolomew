@@ -108,7 +108,7 @@ metapackage and packaging splits, no tool). What this changes against 0.2.0 (on 
   pipeline never used it; panaroo 1.8.0's current build does not ask for it).
 - **Snippy 4.6.0 without its dependencies**: its recipe pins vcflib <= 1.0.2 and tabixpp
   1.1.0, not built for aarch64. The env holds vcflib 1.0.9 (it still has the vcf programs
-  snippy calls) and `perl-bioperl-core` in place of the perl-bioperl bundle (whose aarch64
+  snippy calls; from 0.3.1 rebuilt from source, see "vcflib built for any x86_64 CPU") and `perl-bioperl-core` in place of the perl-bioperl bundle (whose aarch64
   build pulls samtools 0.1.19), with samtools 1.20, bwa 0.7.18 and minimap2 2.28.
 - **mlst 2.35.0 without its dependencies**: its recipe asks for perl-bioperl, which mlst
   never loads and which pulls samtools 0.1.19 built against different zlib and OpenSSL
@@ -134,6 +134,66 @@ source pins in an `x-bactolomew` block that conda ignores). Native (non-containe
 installs create envs from the yamls with `conda env create`, which does not read that
 block: they lack panaroo, snippy, mlst and fastbaps. The container image is the supported
 way to run the pipeline.
+
+## vcflib built for any x86_64 CPU (from 0.3.1)
+
+0.3.0's Snippy step died with "Illegal instruction" on an Intel Mac: `vcfstreamsort` and
+`vcfuniq` (Snippy and freebayes-parallel pipe the variant calls through them) crash at
+start. The bioconda vcflib 1.0.9 (linux-64 build `hdcf5f25_8`) links a zig library into
+every vcf program, and zig builds for the CPU of the machine it runs on: its memcpy,
+memmove and memset use AVX-512, AVX2 and BMI2 without a CPU check (memset faults on its
+first AVX-512 store). The package's C++ code itself is built without `-march=native`.
+vcflib 1.0.2 (0.2.0) had no zig code. Any CPU without AVX-512 is affected: most desktop
+and laptop CPUs, every Intel Mac but the Xeon ones, many virtual machines.
+
+From 0.3.1 the image keeps vcflib 1.0.9 on both platforms but rebuilds it from source in
+the Dockerfile's `vcflib` stage (`docker/vcflib/build_vcflib.sh`):
+
+- the release tarball with its submodules (`vcflib-1.0.9-src.tar.gz`, sha256
+  `493204cb...`) and zig 0.10.1 (sha256 per platform), both checked before use;
+- the bioconda recipe's patches (`docker/vcflib/patches/`) and CMake options (zig and
+  OpenMP on, the env's wfa2-lib, shared libvcflib, pyvcflib), plus `zig_baseline.patch`
+  (zig builds for the architecture's baseline CPU);
+- `-O3 -march=x86-64 -mtune=generic` (`-march=armv8-a` on arm64), and the glibc 2.17
+  sysroot as in bioconda's build: programs linked with conda-forge's 2.39 sysroot inherit
+  its `crt1.o` note "x86 ISA needed: x86-64-v3", and glibc then refuses to start them
+  below Haswell ("CPU ISA level is lower than required");
+- linked against a phylogeny env created from the same `phylogeny.lock` at its image path;
+  the compilers, CMake and pybind11 come from `docker/vcflib/locks/<platform>/vcflib_build.lock`
+  (solved from `docker/vcflib/vcflib_build.yaml` by `docker/solve_locks.py`; never shipped).
+
+Only the package's ELF files (88: the vcf programs, `libvcflib.so.1`, pyvcflib) are copied
+over the bioconda ones, in a layer after the env layers (about 19 MB), so the env layers
+stay cached and the lock check still matches (conda-meta keeps the bioconda record). The
+build fails when a file of the package is not rebuilt, when a rebuilt x86_64 file holds a
+VEX (AVX, AVX2, FMA), BMI or AVX-512 instruction or an ISA level note above the baseline,
+or when `vcfstreamsort | vcfuniq` does not sort and deduplicate a small VCF. The image's
+`/opt/bactolomew/tool_versions.json` names the source build for vcflib
+(`/opt/bactolomew/source_builds/phylogeny.json`). The exported symbols of `libvcflib.so.1`
+are the bioconda ones, so freebayes (which links it) is unchanged.
+
+`liviurotiul/bactolomew:0.3.1-dev` (2026-11-16, local only, linux/amd64, 19.5 GB) checks:
+`update_locks.sh --check-image` 0 differences; the smoke test (step 4) against 0.3.0 gives
+every output the same, and Snippy on two genomes plus snippy-core gives the same
+`core.aln`, `core.full.aln`, `core.tab`, `core.vcf` and per-genome VCFs and `snps.tab`.
+Under `qemu-x86_64 -cpu Nehalem` (and `qemu64`, plain x86-64) the Snippy path (samtools,
+bwa, freebayes, vcfstreamsort, vcfuniq, bcftools, vt, minimap2, seqtk, snp-sites,
+raxml-ng) runs in 0.3.1-dev; in 0.3.0 vcfstreamsort and vcfuniq die with Illegal
+instruction, also under `-cpu Haswell`.
+
+A scan of every ELF file under `/opt/conda/envs/*/bin` and `*/lib` of 0.3.1-dev (5645
+files, host objdump) finds 154 with AVX, AVX2, FMA, BMI or AVX-512 instructions. 134 also
+check the CPU at run time (libdeflate, zlib-ng, zstd, openssl, htslib, numpy, OpenBLAS,
+DIAMOND, IQ-TREE, RAxML-NG, TensorFlow, LLVM and others) and 4 are the JVM's own
+intrinsics. The 16 left use them without a check of their own, none on a step the
+pipeline runs by default: `pilercr` (Bakta, skipped with `--skip-crispr`),
+`raxmlHPC-AVX2` (Gubbins runs it only on a CPU with AVX2), `rapidnj` and `VeryFastTree`
+(Gubbins tree builders that are options only), `prank` (Panaroo's non-default aligner),
+`glimmerhmm` (QUAST with `--glimmer` only), pyrodigal's `avx2`/`avx512` modules and the
+AVX parts of `libabsl_crc32c` and `libaws-checksums` (only reached after their caller's
+CPU check), and `libwfa2` (AVX-512; linked by freebayes and vcflib but only used by
+programs Snippy does not run, such as vcfwave: freebayes, vcfstreamsort and vcfuniq run
+under `-cpu Nehalem`).
 
 ## Size
 
@@ -390,7 +450,12 @@ support in `install.sh`.
    cannot remove makes the check fail: pin a version both platforms have in the yaml (or
    use `no_deps` as panaroo, snippy and mlst do), or, for a package that only exists on one
    platform and holds no tool, add it to `PLATFORM_ONLY` in `check_locks.py` with the reason.
-3. Review `git diff -- docker/locks yamls`.
+3. Review `git diff -- docker/locks yamls`. A change to the phylogeny lock rebuilds the
+   `vcflib` stage; a new vcflib, htslib, tabixpp or wfa2-lib version needs
+   `docker/vcflib/build_vcflib.sh` (source URL and sha256, patches) checked too. The build
+   tools are solved the same way:
+   `docker run --rm -v "$PWD/docker/vcflib:/w/yamls:ro" -v "$PWD/docker/solve_locks.py:/w/solve_locks.py:ro" -v "$PWD/docker/vcflib/locks:/w/locks" -e HOME=/tmp --user "$(id -u):$(id -g)" <the solver image of update_locks.sh> python /w/solve_locks.py /w/yamls /w/locks vcflib_build`,
+   then `python3 docker/check_locks.py docker/vcflib/locks`.
 4. Build with `docker/build.sh <new version>`, check it with
    `bash docker/update_locks.sh --check-image <image>` (the installed envs equal the
    platform's locks), run the smoke test (step 4) against the previous version, and

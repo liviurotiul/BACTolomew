@@ -316,6 +316,59 @@ def _run_command(cmd: list[str], *, stdout_log: Path, stderr_log: Path, logger: 
         subprocess.run(cmd, check=True, stdout=out_fh, stderr=err_fh)
 
 
+CHECKM2_EXTENSION_FLAGS = ("-x", "--extension")
+
+
+def _checkm2_extension(extra_args: list[str]) -> str:
+    """Extension CheckM2 scans for: the user's -x/--extension when given, else "fna".
+
+    The genomes are staged under this one extension, so .fa, .fasta and .fna inputs
+    all work without -x (CheckM2 alone looks only for .fna).
+    """
+    for index, arg in enumerate(extra_args):
+        for flag in CHECKM2_EXTENSION_FLAGS:
+            if arg == flag and index + 1 < len(extra_args):
+                value = extra_args[index + 1]
+            elif arg.startswith(flag + "="):
+                value = arg[len(flag) + 1:]
+            else:
+                continue
+            value = value.strip().lstrip(".")
+            if value:
+                return value
+    return "fna"
+
+
+def _checkm2_command(
+    *,
+    input_dir: Path,
+    output_dir: Path,
+    threads: int,
+    settings: Mapping[str, Any],
+    extra_args: list[str],
+    extension: str,
+) -> list[str]:
+    cmd = [
+        *tool_cmd("checkm2"),
+        "predict",
+        "--threads",
+        str(max(1, int(threads))),
+        "--input",
+        str(input_dir),
+        "--output-directory",
+        str(output_dir),
+    ]
+    db_path = _clean_text(settings.get("checkm2_database_path"))
+    if db_path:
+        cmd.extend(["--database_path", db_path])
+    if bool(settings.get("checkm2_lowmem")):
+        cmd.append("--lowmem")
+    if not any(arg in CHECKM2_EXTENSION_FLAGS or arg.startswith(("-x=", "--extension=")) for arg in extra_args):
+        cmd.extend(["-x", f".{extension}"])
+    cmd.extend(extra_args)
+    return cmd
+
+
 def run_assembly_quality(
     genome_files: list[Path],
     output_path: Path,
@@ -337,8 +390,10 @@ def run_assembly_quality(
         shutil.rmtree(root)
     root.mkdir(parents=True, exist_ok=True)
     checkm2_input_dir.mkdir(parents=True, exist_ok=True)
+    extra_args = [str(arg) for arg in settings.get("checkm2_extra_args") or [] if str(arg).strip()]
+    checkm2_ext = _checkm2_extension(extra_args)
     for genome in genomes:
-        shutil.copy2(genome, checkm2_input_dir / genome.name)
+        shutil.copy2(genome, checkm2_input_dir / f"{genome.stem}.{checkm2_ext}")
 
     labels = [genome.stem for genome in genomes]
     quast_cmd = [
@@ -364,22 +419,14 @@ def run_assembly_quality(
         logger=logger,
     )
 
-    checkm2_cmd = [
-        *tool_cmd("checkm2"),
-        "predict",
-        "--threads",
-        str(max(1, int(threads))),
-        "--input",
-        str(checkm2_input_dir),
-        "--output-directory",
-        str(checkm2_dir),
-    ]
-    db_path = _clean_text(settings.get("checkm2_database_path"))
-    if db_path:
-        checkm2_cmd.extend(["--database_path", db_path])
-    if bool(settings.get("checkm2_lowmem")):
-        checkm2_cmd.append("--lowmem")
-    checkm2_cmd.extend(str(arg) for arg in settings.get("checkm2_extra_args") or [] if str(arg).strip())
+    checkm2_cmd = _checkm2_command(
+        input_dir=checkm2_input_dir,
+        output_dir=checkm2_dir,
+        threads=threads,
+        settings=settings,
+        extra_args=extra_args,
+        extension=checkm2_ext,
+    )
     logger.info("Running CheckM2 genome quality prediction on %d genome(s).", len(genomes))
     _run_command(
         checkm2_cmd,

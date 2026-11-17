@@ -109,6 +109,9 @@ class DataInput:
     # Overrides of the config `phylo` section (pipeline.ToolEnv.configured_phylo_settings).
     phylo_config: Dict[str, Any] = field(default_factory=dict)
     run_id: Optional[str] = None
+    # Set by the runner on the copy that reads the normalized genomes
+    # (pipeline.GenomeInputs.prepare_genome_inputs); empty for the inputs as given.
+    genome_inputs: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         # Always run Bakta and Diamond; require their inputs.

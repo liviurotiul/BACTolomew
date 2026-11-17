@@ -216,6 +216,39 @@ class ChewbbacaStepInstallTests(unittest.TestCase):
             "No cgMLST scheme for the MLST scheme vparahaemolyticus: import one in Settings > Add schema"))
         self.assertIn("--mlst vparahaemolyticus", str(caught.exception))
 
+    def test_fresh_project_starts_and_installs_over_an_empty_folder(self) -> None:
+        """No schema installed yet (only the catalog, as setup leaves DB/cgmlst; even with
+        auto-selection turned off) must not stop the run before it starts, and an empty
+        folder where the schema goes is installed over."""
+        import logging
+
+        from pipeline.ChewBBACAWorkflow import (
+            check_chewbbaca_settings_before_run,
+            prepare_chewbbaca_schema,
+            run_may_install_schema,
+        )
+
+        config = {**self.config, "auto_select_from_mlst": False}
+        self.assertTrue(check_chewbbaca_settings_before_run(config)["auto_select_from_mlst"])
+        (self.dest / "bacillus_anthracis").mkdir()
+        (self.dest / "bacillus_anthracis" / ".DS_Store").write_bytes(b"")
+        self._mlst("banthracis")
+        self.assertTrue(run_may_install_schema(self.run_dir, config))
+        index = [ci.OrgScheme("Banthracis", "Bacillus anthracis cgMLST", "bacillus_anthracis",
+                              ["Bacillus anthracis"], "https://www.cgmlst.org/ncs/schema/Banthracis/", "", "")]
+
+        def fake_download(url, out_path, **_kw):
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(out_path).write_bytes(b"x" * 400)
+            return Path(out_path)
+
+        with mock.patch.object(ci, "fetch_org_index", return_value=index), \
+                mock.patch.object(ci, "_resolve_download_links", return_value=("csv", "zip")), \
+                mock.patch.object(ci, "download_file", side_effect=fake_download):
+            settings = prepare_chewbbaca_schema(self.run_dir, logging.getLogger("test.fresh"), config=config)
+        self.assertEqual(Path(settings["schema_dir"]), (self.dest / "bacillus_anthracis").resolve())
+        self.assertTrue((self.dest / "bacillus_anthracis" / ".genes_list").is_file())
+
 
 class _Unseekable(io.RawIOBase):
     """A write-only stream: zipfile writes a data descriptor after each member, as

@@ -361,8 +361,8 @@ def cmd_db(args: argparse.Namespace) -> int:
 def cmd_check(_args: argparse.Namespace) -> int:
     from pipeline import ContainerRuntime as CR
     from pipeline.Setup import SetupJob, _project_db_layout_ready, _project_db_root, _read_config
-    from pipeline.ToolEnv import APP_MODE_VIEWER, _resolve_runtime, configured_app_mode, project_root, \
-        resource_budget_text
+    from pipeline.ToolEnv import APP_MODE_VIEWER, ConfigError, _resolve_runtime, configured_app_mode, \
+        project_root, resource_budget_text
 
     problems = 0
 
@@ -387,7 +387,14 @@ def cmd_check(_args: argparse.Namespace) -> int:
     print(f"{'Display':<18} {'ok' if not problem else 'no':<8} "
           f"{'available' if not problem else 'none (the window cannot open; setup, run and check work)'}")
     config_path = root / "bactolomew_config.json"
-    config = _read_config(root)
+    try:
+        config = _read_config(root)
+    except ConfigError as exc:
+        # Everything below reads the config: report it and stop rather than check defaults.
+        row("Config", False, str(exc))
+        print()
+        print("Fix the config, then run `bactolomew check` again.")
+        return 1
     row("Config", config_path.is_file(), str(config_path) + ("" if config_path.is_file() else " (run `setup`)"))
     viewer = config_path.is_file() and configured_app_mode(config) == APP_MODE_VIEWER
     row("Mode", None, "viewer (opens shared runs; `setup` adds the pipeline)" if viewer
@@ -404,6 +411,9 @@ def cmd_check(_args: argparse.Namespace) -> int:
         row("Usable runtimes", None, ", ".join(usable) or "none")
         for label in ("Tool image", "Bakta database", "CheckM2 database", "DB folder"):
             row(label, None, "not needed (viewer)")
+        if not qt_ok:  # a viewer is only the window, so a Qt that cannot load is a problem
+            row("Window", False, "cannot load (see Qt (window) above): run `bash install.sh` again, "
+                                 "it prints the command that installs the missing system libraries")
         print()
         print("Ready to view runs." if not problems else f"{problems} item(s) missing.")
         return 0 if not problems else 1
@@ -488,7 +498,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(_version_text())
         return 0
     handlers = {"gui": cmd_gui, "setup": cmd_setup, "run": cmd_run, "check": cmd_check, "db": cmd_db}
-    return handlers[args.command or "gui"](args)
+    from pipeline.ToolEnv import ConfigError
+
+    try:
+        return handlers[args.command or "gui"](args)
+    except ConfigError as exc:  # a config that is not valid JSON: never run on the defaults
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

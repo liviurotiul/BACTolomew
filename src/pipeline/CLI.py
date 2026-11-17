@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Optional, Sequence
 
-from pipeline.ChewBBACAWorkflow import validate_chewbbaca_settings
+from pipeline.ChewBBACAWorkflow import check_chewbbaca_settings_before_run
 from pipeline.DataInput import DataInput
 from pipeline.DbCatalog import (
     MARKER_DB_CATALOG_PATH,
@@ -53,6 +53,9 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParse
                         help="Population structure method (default: phylo.population_method, fastbaps; "
                              "auto: FastBAPS when the tools image has it, else fastGEAR; with --resume: "
                              "the run's method)")
+    parser.add_argument("--accept-cgmlst-terms", dest="accept_cgmlst_terms", action="store_true",
+                        help="accept the cgMLST.org terms of use (non-commercial use, no redistribution), "
+                             "so the run may download the cgMLST scheme of its species")
     return parser
 
 
@@ -114,6 +117,33 @@ def _recorded_genomes(output_path: Path) -> list[Path]:
     return [Path(p) for p in (inputs or {}).get("genomes") or []]
 
 
+def _cgmlst_terms_before_run(output_path: Optional[Path], chewbbaca_config: dict, accept: bool, logger) -> None:
+    """The cgMLST.org terms before a run whose chewBBACA step may download its species'
+    scheme (``output_path`` None for a new run): recorded with --accept-cgmlst-terms, asked
+    for on a terminal, else the run starts with a warning naming the command (its chewBBACA
+    step then stops before any download)."""
+    import sys
+
+    from pipeline.ChewBBACAWorkflow import cgmlst_terms_accepted, run_may_install_schema
+    from pipeline.CgmlstInstall import TERMS_TEXT, accept_terms, default_dest
+
+    if cgmlst_terms_accepted(config=chewbbaca_config):
+        return
+    if not accept and not run_may_install_schema(output_path, chewbbaca_config):
+        return
+    if not accept and sys.stdin.isatty():
+        print(TERMS_TEXT, file=sys.stderr)
+        accept = input("Accept these terms? [y/N] ").strip().lower() in ("y", "yes")
+    if accept:
+        logger.info(f"cgMLST.org terms of use accepted (recorded in {accept_terms(default_dest()).parent}).")
+        return
+    logger.warning(
+        "The chewBBACA step downloads the cgMLST scheme of the run's species from cgMLST.org when it is "
+        "not installed, which needs their terms of use (non-commercial use, no redistribution) accepted "
+        "once. Without them the run stops at that step; add --accept-cgmlst-terms to accept them."
+    )
+
+
 def workflow_cfg(args, logger) -> DataInput:
     output_path = Path(args.output).expanduser().resolve()
     has_run = (output_path / RUN_CONFIG_FILENAME).is_file()
@@ -166,10 +196,12 @@ def workflow_cfg(args, logger) -> DataInput:
     )
     chewbbaca_config = configured_chewbbaca_settings()
     try:
-        validate_chewbbaca_settings(chewbbaca_config)
+        check_chewbbaca_settings_before_run(chewbbaca_config)
     except Exception as exc:
         logger.error(str(exc))
         raise SystemExit(1)
+    _cgmlst_terms_before_run(output_path if resume else None, chewbbaca_config,
+                             bool(getattr(args, "accept_cgmlst_terms", False)), logger)
 
     try:
         return DataInput(

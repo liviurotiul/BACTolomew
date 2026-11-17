@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the BACTolomew unified tool image locally from the repo root.
 # Usage: bash docker/build.sh [--platform linux/amd64|linux/arm64] [version] [image-name]
-#   version     image tag and org.opencontainers.image.version (default 0.3.0; 0.2.0 is
+#   version     image tag and org.opencontainers.image.version (default 0.3.1; 0.2.0 is
 #               built from commit 8142861, see PUBLISHING.md)
 #   image-name  repository name (default bactolomew), e.g. liviurotiul/bactolomew
 # Environment: FASTGEAR_IMAGE=<ref>@sha256:<digest> builds from a mirror of the fastgear
@@ -21,7 +21,7 @@ if [ "${1:-}" = --platform ]; then
     PLATFORM="${2:?--platform needs a value (linux/amd64 or linux/arm64)}"
     shift 2
 fi
-VERSION="${1:-0.3.0}"
+VERSION="${1:-0.3.1}"
 NAME="${2:-bactolomew}"
 IMAGE="$NAME:$VERSION"
 cd "$REPO_ROOT"

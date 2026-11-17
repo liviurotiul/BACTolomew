@@ -3,8 +3,8 @@
 # FastBAPS (conda env fastbaps, every platform, the default) and fastGEAR (MATLAB MCR,
 # folded in from its image, linux/amd64 only, optional at run time).
 #
-# Build from the repo root:   bash docker/build.sh [version]     (default version 0.3.0)
-#   or directly:              docker build --platform linux/amd64 -f docker/Dockerfile -t bactolomew:0.3.0 .
+# Build from the repo root:   bash docker/build.sh [version]     (default version 0.3.1)
+#   or directly:              docker build --platform linux/amd64 -f docker/Dockerfile -t bactolomew:0.3.1 .
 # (0.2.0 is built from commit d0951e9, not from this file: see docker/PUBLISHING.md.)
 # Platforms: linux/amd64 and linux/arm64, with the same tool versions (the locks of
 # docker/locks/linux-64 and docker/locks/linux-aarch64 match, docker/check_locks.py); the
@@ -14,7 +14,7 @@
 # failed fastbaps install fails the build; verify_image.sh checks the methods and records
 # them in /opt/bactolomew/image_contents.json ("population_methods").
 #
-# Run a tool:                 docker run --rm liviurotiul/bactolomew:0.3.0 conda run -n bakta bakta --version
+# Run a tool:                 docker run --rm liviurotiul/bactolomew:0.3.1 conda run -n bakta bakta --version
 #
 # Reproducibility: every env is installed from docker/locks/<platform>/<env>.lock, an
 # explicit lock (exact package URLs and md5s, no solver), plus the PyPI wheels and R source
@@ -45,6 +45,21 @@ COPY docker/locks/linux-64/ /
 FROM scratch AS locks-arm64
 COPY docker/locks/linux-aarch64/ /
 FROM locks-${TARGETARCH} AS locks
+
+# --- stage: vcflib (vcflib 1.0.9 rebuilt from source for a baseline CPU, from 0.3.1) ---
+# The bioconda vcflib 1.0.9 programs (vcfstreamsort, vcfuniq, which Snippy runs, and the
+# rest) carry zig code built for its build machine's CPU and die with "Illegal
+# instruction" on x86_64 CPUs without AVX-512. docker/vcflib/build_vcflib.sh rebuilds
+# the same release (tarball pinned by sha256) with the bioconda patches and options for
+# the architecture's baseline CPU (x86-64 -mtune=generic, armv8-a), against a phylogeny
+# env created from the same lock, with build tools from docker/vcflib/locks (never
+# shipped), and fails on any AVX, BMI or AVX-512 instruction or ISA level note above the
+# baseline left. Same on both platforms.
+FROM condaforge/miniforge3:26.3.2-3@sha256:532f6ee7a858b009dc895f8313eb6ed875f05a455ec57d832aa6b4c66e2799b9 AS vcflib
+SHELL ["/bin/bash", "-lc"]
+COPY --from=locks /phylogeny.lock /opt/bactolomew/locks/
+COPY docker/vcflib/ /opt/bactolomew/vcflib/
+RUN /opt/bactolomew/vcflib/build_vcflib.sh /out
 
 # --- stage: main ---
 # Miniforge3 26.3.2-3 (conda 26.3.2, mamba 2.5.0, Ubuntu 24.04), the release 0.1.0 was built
@@ -87,6 +102,12 @@ RUN /opt/bactolomew/install_envs.sh mobsuite
 # in a layer after the other envs, so a change to it keeps their cached layers.
 COPY --from=locks /fastbaps.* /opt/bactolomew/locks/
 RUN /opt/bactolomew/install_envs.sh fastbaps
+# vcflib's files rebuilt for a baseline CPU (the vcflib stage) over the bioconda package's
+# in the phylogeny env (its conda-meta record stays, so the lock check still matches), in
+# a layer after the envs so the env layers stay cached. With them comes
+# /opt/bactolomew/source_builds/phylogeny.json, the build that make_tool_versions.py
+# records for vcflib.
+COPY --from=vcflib /out/ /
 
 # The yamls (intent) and the locks' tool version summary (its notes), copied after the
 # envs so editing them does not rebuild an env. verify_image.sh writes
@@ -117,7 +138,7 @@ RUN /opt/bactolomew/verify_image.sh
 
 # OCI labels. docker/build.sh passes the version, the git commit, the build time and the
 # repository URL; they are last so a new commit or date only rebuilds this metadata.
-ARG VERSION=0.3.0
+ARG VERSION=0.3.1
 ARG REVISION=unknown
 ARG CREATED=unknown
 ARG SOURCE=https://github.com/liviurotiul/BACTolomew

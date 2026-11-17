@@ -55,15 +55,42 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _load_app_config() -> dict:
-    path = project_root() / "bactolomew_config.json"
+class ConfigError(ValueError):
+    """bactolomew_config.json exists but cannot be read as a JSON object. Never replaced
+    by the defaults: a config the user edited by hand would otherwise be ignored silently."""
+
+
+def read_config_file(path: Path) -> dict:
+    """The config at `path`; {} when there is no file, ConfigError (with the file, line,
+    column and the JSON problem) when there is one that is not a JSON object."""
+    path = Path(path)
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ConfigError(f"Cannot read {path}: {exc}") from exc
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        lines = text.splitlines()
+        bad = lines[exc.lineno - 1].lstrip() if 0 < exc.lineno <= len(lines) else ""
+        if bad.startswith(("#", "//", "/*")):
+            hint = "JSON does not allow comments: delete the comment lines"
+        else:
+            hint = ("fix the file (JSON does not allow comments or trailing commas; "
+                    "keys and texts need double quotes)")
+        raise ConfigError(
+            f"{path} is not valid JSON: {exc.msg} at line {exc.lineno}, column {exc.colno}. "
+            f"{hint[0].upper()}{hint[1:]} and start BACTolomew again."
+        ) from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path} must hold one JSON object ({{...}}), not a {type(data).__name__}.")
+    return data
+
+
+def _load_app_config() -> dict:
+    return read_config_file(project_root() / "bactolomew_config.json")
 
 
 def _deep_merge(base: dict, updates: Mapping[str, Any]) -> dict:
@@ -83,12 +110,7 @@ def save_app_config(updates: Mapping[str, Any]) -> dict:
     leaves resources.max_ram_gb and all other blocks untouched.
     """
     path = project_root() / "bactolomew_config.json"
-    try:
-        current = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        if not isinstance(current, dict):
-            current = {}
-    except Exception:
-        current = {}
+    current = read_config_file(path)  # an invalid file is reported, never overwritten
     merged = _deep_merge(current, dict(updates))
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(merged, indent=2, sort_keys=True), encoding="utf-8")
@@ -1051,6 +1073,8 @@ __all__ = [
     "DEFAULT_RUNTIME",
     "ContainerContext",
     "save_app_config",
+    "ConfigError",
+    "read_config_file",
     "configured_resources",
     "effective_core_budget",
     "configured_max_ram_gb",

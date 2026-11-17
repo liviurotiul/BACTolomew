@@ -28,6 +28,7 @@ from .run_expectations import (
     run_is_active,
 )
 from .run_steps import RunSteps, summarize_run_steps
+from pipeline.RunLock import pid_alive as _pid_alive
 
 if TYPE_CHECKING:
     from pipeline.DataInput import DataInput
@@ -124,14 +125,9 @@ def runs_root() -> Path:
 
 
 def _load_app_config() -> dict:
-    path = _project_root() / "bactolomew_config.json"
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text())
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
+    from pipeline.ToolEnv import read_config_file
+
+    return read_config_file(_project_root() / "bactolomew_config.json")
 
 
 def _ensure_app_config(
@@ -171,16 +167,6 @@ def _compute_run_id(genomes: list[Path]) -> str:
 def _new_attempt_id(sample_set_id: str) -> str:
     stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%f")
     return f"{sample_set_id}__run_{stamp}"
-
-
-def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
 
 
 def _load_catalog_entries(path: Path) -> list[tuple[Path, str]] | None:
@@ -1174,6 +1160,10 @@ class StartupDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, "Stop run", "This run is not currently active.")
             return
         if force:
+            if not run_is_active(entry.path):  # the lock was stale and is gone now
+                self._load_runs()
+                QtWidgets.QMessageBox.information(self, "Stop run", "This run is not currently active.")
+                return
             lock_path = entry.path / RUN_LOCK_FILENAME
             try:
                 data = json.loads(lock_path.read_text(encoding="utf-8")) if lock_path.exists() else {}
@@ -1211,7 +1201,7 @@ class StartupDialog(QtWidgets.QDialog):
         )
 
     def _data_input_from_run_config(self, run_cfg: dict, output_dir: Path) -> Optional["DataInput"]:
-        from pipeline.ChewBBACAWorkflow import validate_chewbbaca_settings
+        from pipeline.ChewBBACAWorkflow import check_chewbbaca_settings_before_run
         from pipeline.DataInput import DataInput
         from pipeline.PopulationStructure import resume_phylo_overrides
         from pipeline.ToolEnv import (
@@ -1286,7 +1276,7 @@ class StartupDialog(QtWidgets.QDialog):
                 phylo_config=resume_phylo_overrides(output_dir),
                 run_id=str(run_cfg.get("run_id") or output_dir.name),
             )
-            validate_chewbbaca_settings(cfg.chewbbaca_config)
+            check_chewbbaca_settings_before_run(cfg.chewbbaca_config)
             if "fastGEAR" in missing_groups and not cfg.fastgear_config.get("image"):
                 raise ValueError(
                     "fastGEAR Docker image not configured. Set bactolomew_config.json fastgear.image before resuming."
@@ -1297,6 +1287,11 @@ class StartupDialog(QtWidgets.QDialog):
             return None
 
     def _resume_run(self, entry: RunEntry) -> None:
+        if run_is_active(entry.path):  # a stale lock of this run is removed here
+            QtWidgets.QMessageBox.warning(
+                self, "Run in progress", f"This run is already in progress in:\n{entry.path}",
+            )
+            return
         active = _find_active_run(exclude=entry.path)
         if active is not None:
             QtWidgets.QMessageBox.warning(
@@ -1484,7 +1479,7 @@ class StartupDialog(QtWidgets.QDialog):
         run_id = _new_attempt_id(sample_set_id)
         output_dir = runs_root() / sample_set_id / run_id
 
-        from pipeline.ChewBBACAWorkflow import validate_chewbbaca_settings
+        from pipeline.ChewBBACAWorkflow import check_chewbbaca_settings_before_run
         from pipeline.DataInput import DataInput
         from pipeline.DbCatalog import COMPOUND_DB_CATALOG_PATH, MARKER_DB_CATALOG_PATH
         from pipeline.ToolEnv import (
@@ -1538,7 +1533,7 @@ class StartupDialog(QtWidgets.QDialog):
         chewbbaca_config = configured_chewbbaca_settings(config.get("chewbbaca"))
         assembly_qc_config = configured_assembly_qc_settings(config.get("assembly_qc"))
         try:
-            validate_chewbbaca_settings(chewbbaca_config)
+            check_chewbbaca_settings_before_run(chewbbaca_config)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Missing chewBBACA config", str(exc))
             return

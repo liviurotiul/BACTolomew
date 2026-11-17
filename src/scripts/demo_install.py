@@ -470,7 +470,13 @@ def fake_urlopen(url: Any, data: Any = None, timeout: Any = None, *args: Any, **
 # Simulated tools: the commands DbDownload runs in the tools image
 # --------------------------------------------------------------------------- #
 def _split_tool(cmd: list[str]) -> tuple[str, list[str]]:
-    """(executable, its arguments) of a ToolEnv command (docker/singularity + conda run)."""
+    """(executable, its arguments) of a ToolEnv command (docker/singularity + conda run).
+    The env-fallback wrapper (`sh -c '... exec conda run -n "$e" "$@"' sh <tool> args`)
+    passes the tool after its script and `sh`."""
+    if "-c" in cmd:
+        i = cmd.index("-c")
+        if i + 2 < len(cmd) and "conda run" in cmd[i + 1] and cmd[i - 1] == "sh":
+            return cmd[i + 3], cmd[i + 4:]
     if "conda" in cmd:
         tail = cmd[cmd.index("conda"):]
         for i, token in enumerate(tail):
@@ -662,6 +668,7 @@ def _docker_pull(args: list[str], emit: Callable[[str], None]) -> int:
     emit("Digest: sha256:7d4e0c1b9a8f6e5d4c3b2a19087f6e5d4c3b2a19087f6e5d4c3b2a19087f6e5d")
     emit(f"Status: Downloaded newer image for {ref}")
     emit(ref)
+    IMAGE_PRESENT.set()  # a pulled image is present under its own name (no docker tag follows)
     return 0
 
 
@@ -1128,6 +1135,7 @@ def install_backend(env: DemoEnv) -> None:
     cr.runtime_status = lambda runtime: cr.RuntimeStatus(runtime, True)
     cr.engine_info = lambda runtime: cr.EngineInfo("docker")  # plain rootful Docker
     cr.docker_image_present = lambda image, engine="docker": IMAGE_PRESENT.is_set()
+    cr.engine_platform = lambda engine="docker": "linux/amd64"  # Docker on an x86_64 machine
     fts._docker_client_available = lambda docker_bin: True
     fts._docker_image_available = lambda docker_bin, image: True
 

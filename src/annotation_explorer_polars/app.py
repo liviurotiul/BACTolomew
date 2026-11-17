@@ -354,6 +354,54 @@ def _docking_ready() -> bool:
     return False
 
 
+def _config_readable() -> bool:
+    """A bactolomew_config.json that is not valid JSON stops the start with the file,
+    line and problem: running on the defaults would ignore the user's settings."""
+    from pipeline.ToolEnv import ConfigError, _load_app_config
+
+    try:
+        _load_app_config()
+        return True
+    except ConfigError as exc:
+        message = str(exc)
+    print(f"Error: {message}", file=sys.stderr)
+    _config_error_box("BACTolomew cannot read its config file, so it does not start.", message)
+    return False
+
+
+def _config_error_box(text: str, message: str) -> None:
+    box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Icon.Critical, "Config file is not valid", text)
+    box.setInformativeText(message)
+    box.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+    box.exec()
+
+
+def _install_config_error_hook() -> None:
+    """A config made invalid while the app is open (a slot reading it raises ConfigError)
+    is reported in a message box, once per problem, and the app keeps running: the next
+    read after the file is fixed works. Any other unhandled exception still ends the app,
+    as PyQt6 does without a hook."""
+    from pipeline.ToolEnv import ConfigError
+
+    previous = sys.excepthook
+    shown: set[str] = set()
+
+    def hook(exc_type, exc, tb):
+        if not (isinstance(exc, ConfigError) and QtWidgets.QApplication.instance() is not None):
+            previous(exc_type, exc, tb)
+            if previous is sys.__excepthook__:
+                QtCore.qFatal(f"Unhandled Python exception: {exc_type.__name__}")
+            return
+        message = str(exc)
+        if message in shown:
+            return
+        shown.add(message)
+        print(f"Error: {message}", file=sys.stderr)
+        _config_error_box("BACTolomew cannot read its config file.", message)
+
+    sys.excepthook = hook
+
+
 def _open_loaded_run(
     payload: object,
     *,
@@ -474,8 +522,9 @@ def main(*, dev_mode: bool = False) -> int:
     # Identity, palette, font, and QSS must be in place before readiness checks:
     # those checks can open the first-time-setup and tool-image dialogs.
     apply_application_theme(app)
-    if not _docking_ready():
+    if not _docking_ready() or not _config_readable():
         return 1
+    _install_config_error_hook()
     if not _ensure_startup_ready(dev_mode=dev_mode):
         return 0
     (project_root() / "cache").mkdir(parents=True, exist_ok=True)

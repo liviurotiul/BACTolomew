@@ -46,30 +46,44 @@ headless install on Rocky 8. macOS and Windows are not yet tested on a real mach
 
 ## Linux
 
-On every distribution the steps are the same:
+The README's [Installation](../README.md#installation) section has the complete sequence for
+each distribution, command by command. On every distribution the steps are the same:
 
 1. Install git and a Python with `venv` (commands below).
-2. Install Docker and let your user run it (not needed for a viewer install).
-3. Run the installer:
+2. Install Docker, start it and let your user run it. Then log out of the desktop and back in,
+   once, so the docker group takes effect. A viewer install skips this step; with Podman, skip
+   the logout.
+3. Download BACTolomew into your home folder and run the installer:
 
    ```bash
+   cd ~
    git clone https://github.com/liviurotiul/BACTolomew.git
    cd BACTolomew
    bash install.sh              # or: bash install.sh --viewer
    ```
 
-   Without git you can download the installer alone; it then clones BACTolomew into
-   `~/BACTolomew`:
+   Instead of cloning it yourself, you can download the installer alone; it then clones
+   BACTolomew into `~/BACTolomew` by itself (git is still needed, and curl to download it):
 
    ```bash
    curl -fsSL -o install.sh https://raw.githubusercontent.com/liviurotiul/BACTolomew/main/install.sh && bash install.sh
    ```
 
-4. Start it with `./bactolomew` (see [First launch](#first-launch)).
+4. Check the install with `./bactolomew check`: the "Qt (window)" line should say ok and, for
+   a full install, the Runtime line should name your container runtime (if it says MISSING
+   with Docker, `groups` should list docker; if not, log out and back in). Then start it with
+   `./bactolomew` (see [First launch](#first-launch)). Later, start it again with
+   `cd ~/BACTolomew && ./bactolomew`.
 
-The installer stops with the exact command to run when Python or a system library is missing:
-run that command and start `install.sh` again. On a desktop system the window's libraries are
-usually present already; the lists below are for minimal and server installs.
+When Python is missing or too old, the installer stops and prints the command that installs
+one: run that command, then `bash install.sh` again. When the window's system libraries or a
+font are missing, it still finishes, but warns and prints a command for each: run the one under
+"Install them with:" and the font command if there is one (the longer "full set" command is
+for minimal and server installs), then `./bactolomew check`; there is no need to run the
+installer again. The printed commands have no `-y`, so the package manager asks you to confirm:
+press Enter, or type y and press Enter when the default is No (dnf). On a desktop system the
+window's libraries are usually present already; the lists below are for minimal and server
+installs.
 
 ### Ubuntu and Debian
 
@@ -77,14 +91,15 @@ Ubuntu 22.04 or newer, Debian 12 or newer (older releases: headless only).
 
 ```bash
 sudo apt update
-sudo apt install git curl python3 python3-venv
+sudo apt install -y git python3 python3-venv
 ```
 
 Docker, from the distribution (the simplest) or from
 [Docker's own repository](https://docs.docker.com/engine/install/ubuntu/):
 
 ```bash
-sudo apt install docker.io
+sudo apt install -y docker.io
+sudo systemctl enable --now docker
 sudo usermod -aG docker $USER      # then log out and back in
 ```
 
@@ -102,25 +117,32 @@ sudo apt install libegl1 libgl1 libx11-xcb1 libx11-6 libxcomposite1 libxdamage1 
 
 ### Fedora
 
+A recent Fedora (tested on Fedora 42).
+
 ```bash
-sudo dnf install git python3
+sudo dnf install -y git python3
 ```
 
 Docker, from Fedora (`moby-engine`) or from
 [Docker's own repository](https://docs.docker.com/engine/install/fedora/):
 
 ```bash
-sudo dnf install moby-engine
+sudo dnf install -y moby-engine
 sudo systemctl enable --now docker
 sudo usermod -aG docker $USER      # then log out and back in
 ```
 
-Podman, which Fedora usually has already, works too.
-
-The window's libraries on a minimal install:
+Podman works too; it needs no `systemctl`, no `usermod` and no logging out. Fedora usually has
+it already, and this installs it when it is missing:
 
 ```bash
-sudo dnf install mesa-libEGL mesa-libGL libX11-xcb libX11 libXcomposite libXdamage libXext \
+sudo dnf install -y podman
+```
+
+The window's libraries and a font on a minimal install:
+
+```bash
+sudo dnf install dejavu-sans-fonts mesa-libEGL mesa-libGL libX11-xcb libX11 libXcomposite libXdamage libXext \
   libXfixes libXrandr libXtst alsa-lib dbus-libs fontconfig freetype mesa-libgbm nspr nss \
   xcb-util-cursor libxcb xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util \
   libxkbcommon-x11 libxkbcommon libxkbfile
@@ -133,34 +155,46 @@ The system Python of version 9 is 3.9, too old, so install 3.12 beside it (the i
 it by itself):
 
 ```bash
-sudo dnf install git python3.12
+sudo dnf install -y git python3.12
 ```
 
-Docker, from [Docker's repository](https://docs.docker.com/engine/install/centos/) (or use
-Podman: `sudo dnf install podman`):
+Podman is the simplest container runtime here (no extra setup, no logging out):
 
 ```bash
-sudo dnf install dnf-plugins-core
-sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-sudo dnf install docker-ce docker-ce-cli containerd.io
-sudo systemctl enable --now docker
-sudo usermod -aG docker $USER      # then log out and back in
+sudo dnf install -y podman
 ```
 
-The window's libraries on a minimal install are the same list as for [Fedora](#fedora).
+Or Docker, from [Docker's repository](https://docs.docker.com/engine/install/centos/). Do this
+instead of installing `podman` in the README's step 2, before `bash install.sh` (or run
+`./bactolomew setup` again afterwards):
+
+```bash
+sudo dnf install -y dnf-plugins-core
+sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+sudo dnf install -y docker-ce docker-ce-cli containerd.io
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER
+```
+
+Then log out of the desktop and log back in (over `ssh`: type `exit` and connect again), so
+your user can use Docker. `docker run --rm hello-world` checks it: it prints "Hello from
+Docker!".
+
+The window's libraries and a font on a minimal install are the same list as for
+[Fedora](#fedora).
 
 ### openSUSE Leap and Tumbleweed
 
 Leap 15.6 or newer, or Tumbleweed. Leap's system Python is 3.6, so install 3.12 beside it:
 
 ```bash
-sudo zypper install git python312
+sudo zypper install -y git python312
 ```
 
 Docker:
 
 ```bash
-sudo zypper install docker
+sudo zypper install -y docker
 sudo systemctl enable --now docker
 sudo usermod -aG docker $USER      # then log out and back in
 ```
@@ -179,8 +213,7 @@ sudo zypper install dejavu-fonts libglvnd libX11-xcb1 libX11-6 libXcomposite1 li
 ### Arch
 
 ```bash
-sudo pacman -S --needed git python
-sudo pacman -S --needed docker
+sudo pacman -Syu --needed --noconfirm git python docker ttf-dejavu
 sudo systemctl enable --now docker
 sudo usermod -aG docker $USER      # then log out and back in
 ```
@@ -211,9 +244,11 @@ build for it).
 On a cluster or a server without a display, install the pipeline only:
 
 ```bash
+cd /path/with/space                               # about 150 GB free; often a project or scratch folder
+module load apptainer                             # if your cluster uses modules; apptainer --version checks it
 git clone https://github.com/liviurotiul/BACTolomew.git
 cd BACTolomew
-bash install.sh --headless
+bash install.sh --headless                        # if it finds no Python: module load python/3.12 (names vary), then again
 ./bactolomew check
 ./bactolomew setup --yes --runtime apptainer      # or docker, podman; --sif PATH for where the image goes
 ./bactolomew run --genomes /path/to/assemblies --out /path/to/run
@@ -231,36 +266,63 @@ Not yet tested on a real Mac. Needs macOS 12 or newer (13 or newer for the windo
 
 ### macOS Intel
 
-1. Install the command line tools (git) and Python 3.12, with [Homebrew](https://brew.sh):
+1. In Terminal (Cmd+Space, type "Terminal"), install the command line tools, which include
+   git. This opens a window: click Install; if it says the tools are already installed, go on.
 
    ```bash
    xcode-select --install
+   ```
+
+   Then install [Homebrew](https://brew.sh):
+
+   ```bash
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+   ```
+
+   On Apple Silicon only, Homebrew ends with "Next steps": run the two lines it prints, which
+   are these:
+
+   ```bash
+   echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+   eval "$(/opt/homebrew/bin/brew shellenv)"
+   ```
+
+   Then install Python 3.12:
+
+   ```bash
    brew install python@3.12
    ```
 
-   or with the installer from [python.org](https://www.python.org/downloads/macos/) (3.12 or 3.13).
+   Instead of Homebrew you can use the installer from
+   [python.org](https://www.python.org/downloads/macos/) (3.12 or 3.13); the installer finds it.
 
 2. Install [Docker Desktop for Mac](https://docs.docker.com/desktop/setup/install/mac-install/)
    (Intel chip), start it, and in Settings > Resources set the memory to at least 16 GB and
    the disk limit to at least 150 GB; Apply & restart. Not needed for a viewer install.
    Docker Desktop is free for personal use, education and small companies.
 
-3. In Terminal:
+3. Make a case-sensitive volume (see below): Disk Utility > select "Macintosh HD" > Add
+   Volume (+), name `Genomics`, format "APFS (Case-sensitive)".
+
+4. In Terminal, install BACTolomew on that volume and start it (for a viewer install, run
+   `bash install.sh --viewer` instead of `bash install.sh`):
 
    ```bash
+   cd /Volumes/Genomics
    git clone https://github.com/liviurotiul/BACTolomew.git
    cd BACTolomew
-   bash install.sh              # or: bash install.sh --viewer
+   bash install.sh
    ./bactolomew
    ```
 
-There is no app bundle yet: start BACTolomew from Terminal with `./bactolomew` in its folder.
+There is no app bundle yet: start BACTolomew from Terminal, later with
+`cd /Volumes/Genomics/BACTolomew && ./bactolomew`.
 
-**Keep runs on a case-sensitive volume.** The Mac disk ignores the case of file names by
-default, and some tool outputs differ only by case. Make a separate volume for your runs: Disk
-Utility > select your disk > Add Volume (+), format "APFS (Case-sensitive)". It shares free
-space with the rest of the disk. Sample names that differ only by case (`S2` and `s2`) are
-refused for the same reason.
+**Why a case-sensitive volume.** Runs are saved inside the BACTolomew folder. The Mac disk
+ignores the case of file names by default, and some tool outputs differ only by case, so the
+BACTolomew folder goes on a separate case-sensitive volume. It shares free space with the rest
+of the disk. Sample names that differ only by case (`S2` and `s2`) are refused for the same
+reason.
 
 ### macOS Apple Silicon (M1 to M4)
 
@@ -299,11 +361,11 @@ Linux). Its window opens on the Windows desktop through WSLg and its tools run i
 need Windows 10 version 2004 (build 19041) or newer, or Windows 11; for the window, Windows 10
 21H2 or newer or Windows 11 with the current WSL (`wsl --update`).
 
-In a PowerShell window (not as administrator; the script asks for administrator rights only
-to turn WSL on):
+Open PowerShell (click Start, type "PowerShell", click **Windows PowerShell**; not as
+administrator, the script asks for administrator rights only to turn WSL on) and run:
 
 ```powershell
-Invoke-WebRequest -Uri https://raw.githubusercontent.com/liviurotiul/BACTolomew/main/install_windows.ps1 -OutFile install_windows.ps1
+Invoke-WebRequest -UseBasicParsing -Uri https://raw.githubusercontent.com/liviurotiul/BACTolomew/main/install_windows.ps1 -OutFile install_windows.ps1
 powershell -ExecutionPolicy Bypass -File .\install_windows.ps1
 ```
 
@@ -314,8 +376,10 @@ installed when missing), `-Dir <linux path>` (default `~/BACTolomew`), `-Ref <ta
 The script checks and, where needed, installs WSL2 and the Linux distribution, the Linux
 packages the window needs, and Docker, then runs `install.sh` inside the distribution and adds
 BACTolomew to the Start Menu. When it says Windows must restart (the first time WSL is turned
-on), restart and run it again with the same options; it continues where it stopped. It is safe
-to run again at any time, for example after installing Docker.
+on), restart, open PowerShell again and run the second command again with the same options;
+it continues where it stopped. It is safe to run again at any time, for example after installing
+Docker. When it installs Ubuntu, Ubuntu asks for a new Linux user name (lowercase letters, no spaces)
+and password (remember the password); at the Linux prompt that follows, type `exit` and press Enter to return to the script.
 
 **Docker.** Two choices:
 
@@ -396,6 +460,13 @@ ready (Python, Qt, container runtime, image, databases, CPU and memory budget).
 
 ## Common problems
 
+**`sudo`: "user is not in the sudoers file" (Debian).** Debian installed with a root password
+does not give your user `sudo`. Run `su -`, type the root password, run
+`usermod -aG sudo <your user name>`, then `exit`, log out and back in, and start again.
+
+**`git clone`: "destination path 'BACTolomew' already exists".** BACTolomew was downloaded
+before. Update it and run the installer again instead: `cd ~/BACTolomew && git pull && bash install.sh`.
+
 **`permission denied` on the Docker socket.** Your user is not in the `docker` group yet:
 `sudo usermod -aG docker $USER`, then log out and back in (or reboot). `./bactolomew check`
 should then show Docker as usable.
@@ -449,11 +520,12 @@ rm -rf ~/.config/BACTolomew ~/.cache/bactolomew ~/.cache/bactolomew_tiles
 
 With Apptainer, the `.sif` file is in the install folder unless you chose another path with `--sif`.
 
-**macOS:**
+**macOS** (if you installed BACTolomew somewhere else, use that folder in the first line; the
+second line also removes an image setup built on Apple Silicon, which has the same name):
 
 ```bash
-rm -rf ~/BACTolomew                                        # or your checkout
-docker image rm liviurotiul/bactolomew:0.3.0               # or the locally built image (docker image ls)
+rm -rf /Volumes/Genomics/BACTolomew
+docker image rm liviurotiul/bactolomew:0.3.0
 rm -rf ~/.cache/bactolomew ~/.cache/bactolomew_tiles
 rm -f ~/Library/Preferences/app.bactolomew.BACTolomew.plist
 ```

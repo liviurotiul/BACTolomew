@@ -1,0 +1,11 @@
+Build the zig library for the baseline CPU of the architecture (x86-64 v1, generic
+aarch64) instead of the build machine's: zig's default (native) target let its compiler
+runtime (memcpy, memmove, memset, ...) use AVX2 and BMI2 without a CPU check.
+--- a/src/zig/build.zig
++++ b/src/zig/build.zig
+@@ -8,4 +8,5 @@ pub fn build(b: *std.build.Builder) void {
+     const lib = b.addStaticLibrary("zig", "vcf.zig");
+     lib.setBuildMode(mode);
++    lib.setTarget(.{ .cpu_model = .baseline });
+     // lib.addObjectFile("../../build/libvcflib.a"); circular dependency
+     switch (mode) {

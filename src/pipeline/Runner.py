@@ -5,7 +5,6 @@ import hashlib
 import subprocess
 import tempfile
 import os
-import socket
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -44,12 +43,13 @@ from pipeline.BaktaWorkflow import parse_multiple_bakta_json, run_bakta_on_fasta
 from pipeline.ChewBBACAWorkflow import (
     CHEWBBACA_OUT_FILES,
     CgmlstSchemaMissing,
+    check_chewbbaca_settings_before_run,
     chewbbaca_schema_stamp_issue,
     ensure_chewbbaca_out,
     run_chewbbaca as run_chewbbaca_tool,
-    validate_chewbbaca_settings,
 )
 from pipeline.DataInput import DataInput
+from pipeline.GenomeInputs import GENOME_INPUTS_KEY, prepare_genome_inputs, uses_normalized_inputs
 from pipeline.DbCatalog import (
     COMPOUND_DB_CATALOG_PATH,
     MARKER_DB_CATALOG_PATH,
@@ -120,12 +120,14 @@ from pipeline.PhylogenyWorkflow import (
     ensure_panaroo_out,
     run_phylogeny as run_phylogeny_tool,
 )
+from pipeline.RunLock import lock_payload
 from pipeline.RunSteps import ProgressCallback, StatusCallback, StepProgress, planned_steps
 from pipeline.RunValidation import (
     chewbbaca_samples_left_out,
     file_has_bytes as run_file_has_bytes,
     file_sha256,
     genome_set_change_error,
+    recorded_genome_samples,
     MARKER_HITS_STAMP,
     marker_hits_stamp_matches,
     snippy_tree_path,
@@ -593,11 +595,16 @@ def _build_marker_resistance_metadata_inputs(marker_paths: list[Path]) -> dict[s
 def _build_run_inputs(
     CFG: DataInput, *, thread_plan: dict[str, int], population: PopulationChoice | None = None
 ) -> dict[str, object]:
+    # A run reading normalized genome copies records the files as given (a resume
+    # rebuilds the run from them) and the copies under genome_inputs.
+    genome_inputs = dict(CFG.genome_inputs or {})
+    given_genomes = genome_inputs.pop("given_genomes", None)
+    given_reference = genome_inputs.pop("given_snippy_reference", CFG.snippy_reference)
     inputs: dict[str, object] = {
-        "genomes": [str(p) for p in CFG.genomes],
+        "genomes": given_genomes if given_genomes is not None else [str(p) for p in CFG.genomes],
         "marker_sequences": [str(p) for p in CFG.marker_sequences],
         "reference_locus_sequences": [str(p) for p in CFG.reference_locus_sequences],
-        "snippy_reference": str(CFG.snippy_reference) if CFG.snippy_reference else None,
+        "snippy_reference": str(given_reference) if given_reference else None,
         "bakta_db": str(CFG.bakta_db) if CFG.bakta_db else None,
         "output": str(CFG.output),
         "cores": CFG.total_cores,
@@ -628,6 +635,8 @@ def _build_run_inputs(
         # The population structure method the run uses (PopulationStructure: the explorer
         # and the validators find its folder from this record).
         inputs["population_structure"] = population.record()
+    if genome_inputs:
+        inputs[GENOME_INPUTS_KEY] = genome_inputs
     marker_resistance_metadata = _build_marker_resistance_metadata_inputs(CFG.marker_sequences)
     if marker_resistance_metadata:
         inputs["marker_resistance_metadata"] = marker_resistance_metadata
@@ -837,13 +846,7 @@ def _build_run_state(
 
 
 def _write_run_lock(output_dir: Path, *, run_id: str, start_time: str) -> None:
-    data = {
-        "run_id": run_id,
-        "pid": os.getpid(),
-        "host": socket.gethostname(),
-        "start_time": start_time,
-    }
-    _write_json(output_dir / RUN_LOCK_FILENAME, data)
+    _write_json(output_dir / RUN_LOCK_FILENAME, lock_payload(run_id=run_id, start_time=start_time))
 
 
 def _clear_run_lock(output_dir: Path) -> None:
@@ -1595,7 +1598,7 @@ def _run_workflow_impl(CFG: DataInput, *, environment: dict | None = None):
     if genome_set_error:
         logger.error(genome_set_error)
         raise GenomeSetChangedError(genome_set_error)
-    validate_chewbbaca_settings(CFG.chewbbaca_config)
+    check_chewbbaca_settings_before_run(CFG.chewbbaca_config)
     phylo_settings = configured_phylo_settings(CFG.phylo_config)
     _check_phylo_settings(CFG, phylo_settings)
     # The population structure method, from what the tools image holds; a method set for
@@ -1627,6 +1630,15 @@ def _run_workflow_impl(CFG: DataInput, *, environment: dict | None = None):
     )
 
     existing_run_cfg = _read_json_dict(CFG.output / RUN_CONFIG_FILENAME) or {}
+    # A new run (and one made with them) reads normalized copies of its genomes
+    # (GenomeInputs); a folder made before keeps reading the original files.
+    if uses_normalized_inputs(existing_run_cfg, folder_has_run=recorded_genome_samples(CFG.output) is not None):
+        try:
+            CFG = prepare_genome_inputs(CFG, existing_run_cfg, logger)
+        except (OSError, ValueError) as e:
+            msg = f"Failed to prepare the genome inputs: {e}"
+            logger.error(msg)
+            raise RuntimeError(msg) from e
     sample_set_id = str(existing_run_cfg.get("sample_set_id") or "").strip() or _compute_sample_set_id(CFG.genomes)
     configured_run_id = str(CFG.run_id).strip() if getattr(CFG, "run_id", None) else ""
     existing_run_id = str(existing_run_cfg.get("run_id") or "").strip()

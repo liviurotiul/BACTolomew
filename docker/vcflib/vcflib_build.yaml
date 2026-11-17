@@ -1,0 +1,21 @@
+name: bactolomew-vcflib-build
+channels:
+  - conda-forge
+# The build tools for vcflib 1.0.9 from source (docker/vcflib/build_vcflib.sh), used only
+# in the Dockerfile's vcflib stage and never shipped. The libraries vcflib links (htslib,
+# tabixpp, wfa2-lib, zlib, Python) come from the phylogeny env's own lock, so the rebuilt
+# files match the env they are copied into. gcc/gxx 12.4 and pybind11 2.13 (for pyvcflib)
+# as in the bioconda build of vcflib 1.0.9 (hdcf5f25_8); python is the phylogeny env's.
+# The glibc 2.17 sysroot (as bioconda's) on every platform (solve_locks.py renames it for
+# aarch64): conda-forge's 2.39 sysroot has a crt1.o marked "x86 ISA needed: x86-64-v3",
+# which every program linked with it inherits, and glibc then refuses to start them on a
+# CPU below x86-64-v3 ("CPU ISA level is lower than required").
+dependencies:
+  - gcc=12.4
+  - gxx=12.4
+  - sysroot_linux-64=2.17
+  - cmake=3.30
+  - make
+  - pkg-config
+  - python=3.12.15
+  - pybind11=2.13

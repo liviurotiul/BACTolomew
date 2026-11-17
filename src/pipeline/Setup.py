@@ -33,6 +33,7 @@ from pipeline.ToolEnv import (
     configured_app_mode,
     configured_fastgear_settings,
     project_root,
+    read_config_file,
 )
 
 
@@ -625,14 +626,8 @@ def _ensure_checkm2_db(assembly_qc_env: Optional[Path], *, log: LogFn) -> Path:
 
 
 def _read_config(root: Path) -> dict:
-    config_path = root / "bactolomew_config.json"
-    if not config_path.exists():
-        return {}
-    try:
-        raw = json.loads(config_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return raw if isinstance(raw, dict) else {}
+    """ConfigError when the file exists but is not valid JSON (see ToolEnv.read_config_file)."""
+    return read_config_file(root / "bactolomew_config.json")
 
 
 def _write_setup_config(

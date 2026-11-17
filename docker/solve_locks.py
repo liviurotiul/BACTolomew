@@ -60,6 +60,12 @@ def platform_name(name: str, plat: str) -> str:
     return re.sub(rf"_{re.escape(other)}$", f"_{plat}", name)
 
 
+def platform_spec(spec: str, plat: str) -> str:
+    """sysroot_linux-64=2.17 -> sysroot_linux-aarch64=2.17 for linux-aarch64 (the name only)."""
+    name, rest = re.match(r"([A-Za-z0-9_.-]+?)([=<>!~ ].*)?$", spec).groups()
+    return platform_name(name, plat) + (rest or "")
+
+
 def solve(plat: str, specs: list[str]) -> list[dict]:
     cmd = ["mamba", "create", "-n", "solve", "--dry-run", "--json", "--yes", "--platform", plat,
            *CHANNELS, *specs]
@@ -122,7 +128,9 @@ def align(env: str, specs: list[str], rounds: int = 6) -> dict[str, list[dict]]:
         out = {}
         for plat in PLATFORMS:
             named = [platform_name(e.split("==")[0], plat) + "==" + e.split("==")[1] for e in extra]
-            out[plat] = solve(plat, specs + named)
+            # A yaml entry named for one platform (sysroot_linux-64=2.17) is asked for under
+            # the solved platform's own name (sysroot_linux-aarch64=2.17).
+            out[plat] = solve(plat, [platform_spec(s, plat) for s in specs] + named)
         return out
 
     print(f"[solve] {env}", flush=True)
