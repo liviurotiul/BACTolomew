@@ -111,8 +111,11 @@ class SetupPlanTest(unittest.TestCase):
         missing = CR.RuntimeStatus("singularity", False, "not_installed", "Apptainer is not installed.")
         with mock.patch.object(CR, "runtime_status", return_value=missing):
             _config, updates, problem = M._setup_config(args, {}, root)
+        from pipeline.ToolEnv import TOOLS_IMAGE
+
+        sif = TOOLS_IMAGE.split("@")[0].rsplit("/", 1)[-1].replace(":", "-") + ".sif"
         self.assertEqual(updates, {"runtime": "singularity",
-                                   "container": {"sif_path": "/opt/bactolomew/bactolomew-0.3.0.sif"}})
+                                   "container": {"sif_path": f"/opt/bactolomew/{sif}"}})
         self.assertIn("not installed", problem)
         # No runtime anywhere: still a plan (for docker), with the reason it cannot run.
         args = argparse.Namespace(runtime=None, sif=None)

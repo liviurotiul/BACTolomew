@@ -273,7 +273,7 @@ def get_tool_env_prefix(tool_name: str) -> Optional[str]:
 # absolute-path command args resolve unchanged inside the container.
 # ---------------------------------------------------------------------------
 
-TOOLS_IMAGE = "liviurotiul/bactolomew:0.3.0@sha256:7ed7408c88aac76f6c00b2417862e24f1dd3d91fe9ea89c5d62d57df7770ffde"
+TOOLS_IMAGE = "liviurotiul/bactolomew:0.3.1@sha256:9f5405190aa2ce7e70f953ce4c79af544ced9668dd2a43ff0ac586d1f885bc5d"
 # The platforms TOOLS_IMAGE is published for (a single-platform digest). On another engine
 # platform (Apple Silicon: linux/arm64) setup builds a native image instead of pulling it.
 TOOLS_IMAGE_PLATFORMS = ("linux/amd64",)
@@ -384,7 +384,7 @@ def image_has_repository_path(image: str) -> bool:
 def podman_image_ref(image: str) -> str:
     """`image` as Podman should name it: a Docker Hub path without a registry host
     (`owner/name:tag`) gets `docker.io/`, since Podman's short-name policy can refuse it;
-    bare local names (`bactolomew:0.3.0`) and qualified references are unchanged."""
+    bare local names (`bactolomew:0.3.1`) and qualified references are unchanged."""
     ref = str(image).strip()
     first, sep, _rest = ref.partition("/")
     if not sep or "." in first or ":" in first or first == "localhost":

@@ -342,7 +342,7 @@ image is not published yet. Two ways to get it:
   setup:
 
   ```bash
-  docker pull --platform linux/amd64 "liviurotiul/bactolomew:0.3.0@sha256:7ed7408c88aac76f6c00b2417862e24f1dd3d91fe9ea89c5d62d57df7770ffde"
+  docker pull --platform linux/amd64 "liviurotiul/bactolomew:0.3.1@sha256:9f5405190aa2ce7e70f953ce4c79af544ced9668dd2a43ff0ac586d1f885bc5d"
   ```
 
   Setup then finds it and does not build (it notes that the image runs emulated). If you later
@@ -514,7 +514,7 @@ your runs, so move any you want to keep first.
 
 ```bash
 rm -rf ~/BACTolomew                                        # or your --dir or checkout
-docker image rm liviurotiul/bactolomew:0.3.0               # podman image rm with Podman
+docker image rm liviurotiul/bactolomew:0.3.1               # podman image rm with Podman
 rm -rf ~/.config/BACTolomew ~/.cache/bactolomew ~/.cache/bactolomew_tiles
 ```
 
@@ -525,7 +525,7 @@ second line also removes an image setup built on Apple Silicon, which has the sa
 
 ```bash
 rm -rf /Volumes/Genomics/BACTolomew
-docker image rm liviurotiul/bactolomew:0.3.0
+docker image rm liviurotiul/bactolomew:0.3.1
 rm -rf ~/.cache/bactolomew ~/.cache/bactolomew_tiles
 rm -f ~/Library/Preferences/app.bactolomew.BACTolomew.plist
 ```
@@ -537,7 +537,7 @@ remove only BACTolomew inside the distribution:
 
 ```powershell
 wsl -d Ubuntu-24.04 -- rm -rf ~/BACTolomew ~/.config/BACTolomew ~/.cache/bactolomew ~/.cache/bactolomew_tiles
-wsl -d Ubuntu-24.04 -- docker image rm liviurotiul/bactolomew:0.3.0
+wsl -d Ubuntu-24.04 -- docker image rm liviurotiul/bactolomew:0.3.1
 ```
 
 or, if the distribution was installed only for BACTolomew, remove all of it (this deletes every
